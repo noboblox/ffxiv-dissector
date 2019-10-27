@@ -2,13 +2,11 @@
 #include <stdio.h>
 
 #define FRAME_HEADER_LEN 40
-#define BLOCK_HEADER_LEN 32
+#define BLOCK_HEADER_LEN 24
 
 static dissector_handle_t ffxiv_handle;
-
-static int proto_ffxiv = -1;
-
 static gint ett_ffxiv = -1;
+
 
 // FFXIV protocol generic types
 typedef struct {
@@ -48,25 +46,11 @@ typedef struct {
   uint64_t timestamp;   // [24:31]
 } block_header_t;
 
-// FFXIV Frame
-static int hf_ffxiv_frame_pdu_magic = -1;
-static int hf_ffxiv_frame_pdu_timestamp = -1;
-static int hf_ffxiv_frame_pdu_length = -1;
-static int hf_ffxiv_frame_pdu_count = -1;
-static int hf_ffxiv_frame_flag_compressed = -1;
-
-// FFXIV Message
-static int hf_ffxiv_message_pdu_length = -1;
-static int hf_ffxiv_message_pdu_send_id = -1;
-static int hf_ffxiv_message_pdu_recv_id = -1;
-static int hf_ffxiv_message_pdu_type = -1;
-static int hf_ffxiv_message_pdu_timestamp = -1;
-
 // Utility methods
-static guint32 get_frame_length(packet_info *pinfo, tvbuff_t *tvb, int offset, void *data);
-static guint32 get_message_length(packet_info *pinfo, tvbuff_t *tvb, int offset, void *data);
-static void build_frame_header(tvbuff_t *tvb, int offset, packet_info *pinfo, proto_tree *tree, frame_header_t *eh_ptr);
-static void build_message_header(tvbuff_t *tvb, int offset, packet_info *pinfo, proto_tree *tree, block_header_t *eh_ptr);
+static guint32 get_frame_length(packet_info* pinfo, tvbuff_t *tvb, int offset, void* data);
+static guint32 get_message_length(packet_info* pinfo, tvbuff_t *tvb, int offset, void* data);
+static void build_frame_header(tvbuff_t *tvb, int offset, packet_info*, proto_tree *tree, frame_header_t *eh_ptr);
+static void build_message_header(tvbuff_t *tvb, int offset, packet_info*, proto_tree *tree, block_header_t *eh_ptr);
 
 // Dissection methods
 static int dissect_ffxiv(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data);

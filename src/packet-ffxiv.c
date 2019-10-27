@@ -5,6 +5,8 @@
 #include <epan/proto.h>
 #include <epan/expert.h>
 #include <epan/wmem/wmem.h>
+#include "epan/dissectors/packet-tcp.h"
+#include "epan/wmem/wmem.h"
 
 #include "packet-ffxiv.h"
 
@@ -12,47 +14,71 @@
 #define FFXIV_MAGIC 0x5252
 #define FFXIV_PORT_RANGE "54992-54994,55006-55007,55021-55040"
 
+static const int ffxiv_header_length = 40;
+
+static int proto_ffxiv = -1; //!< Global id for this protocol. Set by wireshark on register.
+
 static range_t *global_ffxiv_port_range = NULL;
 
+// FFXIV header
+static int hf_ffxiv_frame_pdu_magic = -1; //!< "RR" Tag 0x5252
+static int hf_ffxiv_frame_pdu_timestamp = -1; 
+static int hf_ffxiv_frame_pdu_length = -1;
+static int hf_ffxiv_frame_pdu_count = -1;
+static int hf_ffxiv_frame_flag_compressed = -1;
+
+// FFXIV Message
+static int hf_ffxiv_message = -1;
+static int hf_ffxiv_message_pdu_length = -1;
+static int hf_ffxiv_message_pdu_send_id = -1;
+static int hf_ffxiv_message_pdu_recv_id = -1;
+static int hf_ffxiv_message_header_unknown1 = -1;
+static int hf_ffxiv_message_header_unknown2 = -1;
+static int hf_ffxiv_message_opcode = -1;
+static int hf_ffxiv_message_pdu_timestamp = -1;
+
+
+
 // Assemble generic headers
-static void build_frame_header(tvbuff_t *tvb, int offset, packet_info *pinfo, proto_tree *tree, frame_header_t *eh_ptr) {
-  eh_ptr->magic      = tvb_get_letohs(tvb, offset);
-  eh_ptr->timestamp  = tvb_get_letoh64(tvb, offset + 16);
-  eh_ptr->length     = tvb_get_letohl(tvb, offset + 24);
-  eh_ptr->blocks     = tvb_get_letohs(tvb, offset + 30);
+static void build_frame_header(tvbuff_t *tvb, int offset, packet_info *pinfo, proto_tree *tree, frame_header_t *eh_ptr)
+{
+  eh_ptr->magic = tvb_get_letohs(tvb, offset);
+  eh_ptr->timestamp = tvb_get_letoh64(tvb, offset + 16);
+  eh_ptr->length = tvb_get_letohl(tvb, offset + 24);
+  eh_ptr->blocks = tvb_get_letohs(tvb, offset + 30);
   eh_ptr->compressed = tvb_get_guint8(tvb, 33);
 
-  proto_tree_add_item(tree, hf_ffxiv_frame_pdu_magic, tvb, 0, 2, ENC_LITTLE_ENDIAN);
-  proto_tree_add_item(tree, hf_ffxiv_frame_pdu_length, tvb, 24, 4, ENC_LITTLE_ENDIAN);
-  proto_tree_add_item(tree, hf_ffxiv_frame_pdu_count, tvb, 30, 2, ENC_LITTLE_ENDIAN);
+  proto_tree_add_item(tree, hf_ffxiv_frame_pdu_magic,       tvb, 0,  4, ENC_LITTLE_ENDIAN);
+  proto_tree_add_item(tree, hf_ffxiv_frame_pdu_timestamp,   tvb, 16, 8, ENC_LITTLE_ENDIAN |ENC_TIME_MSECS);
+  proto_tree_add_item(tree, hf_ffxiv_frame_pdu_length,      tvb, 24, 4, ENC_LITTLE_ENDIAN);
+  proto_tree_add_item(tree, hf_ffxiv_frame_pdu_count,       tvb, 30, 2, ENC_LITTLE_ENDIAN);
   proto_tree_add_item(tree, hf_ffxiv_frame_flag_compressed, tvb, 33, 1, ENC_LITTLE_ENDIAN);
-
-  // Switch this to ENC_TIME_MSECS or similar ater:
-  proto_tree_add_item(tree, hf_ffxiv_frame_pdu_timestamp, tvb, 16, 8, ENC_LITTLE_ENDIAN);
 }
 
-static void build_message_header(tvbuff_t *tvb, int offset, packet_info *pinfo, proto_tree *tree, block_header_t *eh_ptr) {
-  eh_ptr->length      = tvb_get_letohl(tvb, offset);
-  eh_ptr->send_id     = tvb_get_letohl(tvb, offset + 4);
-  eh_ptr->recv_id     = tvb_get_letohl(tvb, offset + 8);
-  eh_ptr->block_type  = tvb_get_letohl(tvb, offset + 16);
-  eh_ptr->timestamp   = tvb_get_letoh64(tvb, offset + 24);
+static void build_message_header(tvbuff_t *tvb, int offset, packet_info *pinfo, proto_tree *tree, block_header_t *eh_ptr)
+{
+  eh_ptr->length = tvb_get_letohl(tvb, offset);
+  eh_ptr->send_id = tvb_get_letohl(tvb, offset + 4);
+  eh_ptr->recv_id = tvb_get_letohl(tvb, offset + 8);
+  eh_ptr->block_type = tvb_get_letohl(tvb, offset + 16);
 
   proto_tree_add_item(tree, hf_ffxiv_message_pdu_length, tvb, 0, 4, ENC_LITTLE_ENDIAN);
   proto_tree_add_item(tree, hf_ffxiv_message_pdu_send_id, tvb, 4, 4, ENC_LITTLE_ENDIAN);
   proto_tree_add_item(tree, hf_ffxiv_message_pdu_recv_id, tvb, 8, 4, ENC_LITTLE_ENDIAN);
+  proto_tree_add_item(tree, hf_ffxiv_message_header_unknown1, tvb, 12, 4, ENC_LITTLE_ENDIAN);
+  proto_tree_add_item(tree, hf_ffxiv_message_header_unknown2, tvb, 16, 2, ENC_LITTLE_ENDIAN);
+  proto_tree_add_item(tree, hf_ffxiv_message_opcode, tvb, 18, 2, ENC_LITTLE_ENDIAN);
 
-  // This is actually little endian, but we display it as BE to make debugging easier for now
-  proto_tree_add_item(tree, hf_ffxiv_message_pdu_type, tvb, 16, 4, ENC_BIG_ENDIAN);
-  proto_tree_add_item(tree, hf_ffxiv_message_pdu_timestamp, tvb, 24, 8, ENC_LITTLE_ENDIAN);
+  // TODO
+  //proto_tree_add_item(tree, hf_ffxiv_message_pdu_timestamp, tvb, 24, 8, ENC_LITTLE_ENDIAN); move to message data
 }
 
 // Deal with multiple payloads in a single PDU
-static guint32 get_frame_length(packet_info *pinfo, tvbuff_t *tvb, int offset, void *data) {
+static guint32 get_frame_length(packet_info *pinfo, tvbuff_t *tvb, int offset, void* data) {
   return tvb_get_letohl(tvb, offset + 24);
 }
 
-static guint32 get_message_length(packet_info *pinfo, tvbuff_t *tvb, int offset, void *data) {
+static guint32 get_message_length(packet_info *pinfo, tvbuff_t *tvb, int offset, void* data) {
   return tvb_get_letohl(tvb, offset);
 }
 
@@ -61,11 +87,11 @@ static int dissect_message(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, 
   proto_tree      *message_tree = NULL;
   proto_item      *ti = NULL;
   block_header_t  header;
-  int             datalen;
-  int             orig_offset;
-  int             offset = 0;
-  int             reported_datalen;
-  int             reported_length;
+  unsigned int             datalen;
+  int                      orig_offset;
+  int                      offset = 0;
+  unsigned int             reported_datalen;
+  unsigned int             reported_length;
   tvbuff_t        *message_tvb;
 
   // Verify we have a full message in the tvb
@@ -78,7 +104,7 @@ static int dissect_message(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, 
   col_set_str(pinfo->cinfo, COL_PROTOCOL, "FFXIV");
   col_clear(pinfo->cinfo, COL_INFO);
 
-  ti = proto_tree_add_item(tree, proto_ffxiv, tvb, offset, -1, ENC_NA);
+  ti = proto_tree_add_item(tree, hf_ffxiv_message, tvb, offset, -1, ENC_NA);
   message_tree = proto_item_add_subtree(ti, ett_ffxiv);
 
   orig_offset = offset;
@@ -141,9 +167,13 @@ static int dissect_frame(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, vo
 
   build_frame_header(tvb, offset, pinfo, frame_tree, &header);
 
-  if (header.compressed & FFXIV_COMPRESSED_FLAG) {
+  // Package is compressed
+  if (header.compressed & FFXIV_COMPRESSED_FLAG)
+  {
     payload_tvb = tvb_uncompress(tvb, FRAME_HEADER_LEN, tvb_reported_length_remaining(tvb, FRAME_HEADER_LEN));
-  } else {
+  }
+  else
+  {
     payload_tvb = tvb_new_subset_remaining(tvb, FRAME_HEADER_LEN);
   }
 
@@ -172,79 +202,50 @@ static int dissect_ffxiv(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, vo
 }
 
 // Wireshark standard is to stick these at the end
-void proto_register_ffxiv(void) {
+void proto_register_ffxiv(void)
+{
   static hf_register_info hf[] = {
-    { &hf_ffxiv_frame_pdu_magic,
-      { "Frame Magic", "ffxiv.frame.magic",
-        FT_UINT16, BASE_DEC,
-        NULL, 0x0,
-        NULL, HFILL
-      }
-    },
-    // Do something here to get timestamps rendered properly
-    { &hf_ffxiv_frame_pdu_timestamp,
-      { "Frame Timestamp", "ffxiv.frame.timestamp",
-        FT_UINT64, BASE_DEC,
-        NULL, 0x0,
-        NULL, HFILL
-      }
-    },
-    { &hf_ffxiv_frame_pdu_length,
-     { "Frame Length", "ffxiv.frame.length",
-        FT_UINT32, BASE_DEC,
-        NULL, 0x0,
-        NULL, HFILL
-      }
-    },
-    { &hf_ffxiv_frame_pdu_count,
-      { "Frame Count", "ffxiv.frame.count",
-        FT_UINT16, BASE_DEC,
-        NULL, 0x0,
-        NULL, HFILL
-      }
-    },
-    { &hf_ffxiv_frame_flag_compressed,
-      { "Frame Compression", "ffxiv.frame.compressed",
-        FT_BOOLEAN, 8,
-        NULL, FFXIV_COMPRESSED_FLAG,
-        NULL, HFILL
-      }
-    },
-    { &hf_ffxiv_message_pdu_length,
-      { "Message Length", "ffxiv.message.length",
-        FT_UINT32, BASE_DEC,
-        NULL, 0x0,
-        NULL, HFILL
-      }
-    },
-    { &hf_ffxiv_message_pdu_send_id,
-      { "Message Sender ID", "ffxiv.message.sender",
-        FT_UINT32, BASE_DEC,
-        NULL, 0x0,
-        NULL, HFILL
-      }
-    },
-    { &hf_ffxiv_message_pdu_recv_id,
-      { "Message Receiver ID", "ffxiv.message.receiver",
-        FT_UINT32, BASE_DEC,
-        NULL, 0x0,
-        NULL, HFILL
-      }
-    },
-    { &hf_ffxiv_message_pdu_type,
-      { "Message Type", "ffxiv.message.type",
-        FT_UINT32, BASE_HEX,
-        NULL, 0x0,
-        NULL, HFILL
-      }
-    },
-    { &hf_ffxiv_message_pdu_timestamp,
-      { "Message Timestamp", "ffxiv.message.timestamp",
-        FT_ABSOLUTE_TIME, ABSOLUTE_TIME_LOCAL,
-        NULL, 0x0,
-        "The timestamp of the message event", HFILL
-      }
-    },
+      {&hf_ffxiv_frame_pdu_magic,
+       {"RR Tag", "ffxiv.frame.magic", FT_UINT16, BASE_HEX, NULL, 0x0,
+        NULL, HFILL}},
+      {&hf_ffxiv_message,
+       {"FFXIV single message", "ffxiv.message", FT_NONE, BASE_NONE, NULL, 0x0,
+        NULL, HFILL}},
+      // Do something here to get timestamps rendered properly
+      {&hf_ffxiv_frame_pdu_timestamp,
+       {"Frame Timestamp", "ffxiv.frame.timestamp", FT_ABSOLUTE_TIME, ABSOLUTE_TIME_UTC, NULL,
+        0x0, NULL, HFILL}},
+      {&hf_ffxiv_frame_pdu_length,
+       {"Frame Length", "ffxiv.frame.length", FT_UINT32, BASE_DEC, NULL, 0x0,
+        NULL, HFILL}},
+      {&hf_ffxiv_frame_pdu_count,
+       {"Frame Count", "ffxiv.frame.count", FT_UINT16, BASE_DEC, NULL, 0x0,
+        NULL, HFILL}},
+      {&hf_ffxiv_frame_flag_compressed,
+       {"Frame Compression", "ffxiv.frame.compressed", FT_BOOLEAN, 8, NULL,
+        FFXIV_COMPRESSED_FLAG, NULL, HFILL}},
+      {&hf_ffxiv_message_pdu_length,
+       {"Message Length", "ffxiv.message.length", FT_UINT32, BASE_DEC, NULL,
+        0x0, NULL, HFILL}},
+      {&hf_ffxiv_message_pdu_send_id,
+       {"Message Sender ID", "ffxiv.message.sender", FT_UINT32, BASE_DEC, NULL,
+        0x0, NULL, HFILL}},
+      {&hf_ffxiv_message_pdu_recv_id,
+       {"Message Receiver ID", "ffxiv.message.receiver", FT_UINT32, BASE_DEC,
+        NULL, 0x0, NULL, HFILL}},
+      {&hf_ffxiv_message_header_unknown1,
+      {"Unknown value 1", "ffxiv.message.unknown1", FT_UINT32, BASE_DEC,
+        NULL, 0x0, NULL, HFILL}},
+      {&hf_ffxiv_message_header_unknown2,
+      {"Unknown value 2", "ffxiv.message.unknown2", FT_UINT16, BASE_HEX,
+        NULL, 0x0, NULL, HFILL}},
+      {&hf_ffxiv_message_opcode,
+       {"Message OpCode", "ffxiv.message.opcode", FT_UINT16, BASE_HEX, NULL, 0x0,
+        NULL, HFILL}},
+      {&hf_ffxiv_message_pdu_timestamp,
+       {"Message Timestamp", "ffxiv.message.timestamp", FT_ABSOLUTE_TIME,
+        ABSOLUTE_TIME_LOCAL, NULL, 0x0, "The timestamp of the message event",
+        HFILL}},
   };
 
   static gint *ett[] = {
@@ -254,7 +255,7 @@ void proto_register_ffxiv(void) {
   module_t          *ffxiv_module;
   dissector_table_t ffxiv_frame_magic_table;
 
-  proto_ffxiv = proto_register_protocol("FFXIV", "FFXIV", "ffxiv");
+  proto_ffxiv = proto_register_protocol("Final Fantasy XIV message block", "FFXIV", "ffxiv");
   proto_register_field_array(proto_ffxiv, hf, array_length(hf));
 
   proto_register_subtree_array(ett, array_length(ett));
@@ -265,14 +266,14 @@ void proto_register_ffxiv(void) {
     "ffxiv.frame.magic", "FFXIV Magic Byte", proto_ffxiv, FT_UINT16, BASE_DEC
   );
 
-  range_convert_str(&global_ffxiv_port_range, FFXIV_PORT_RANGE, 55551);
+  range_convert_str(wmem_epan_scope(), &global_ffxiv_port_range, FFXIV_PORT_RANGE, 55551);
   prefs_register_range_preference(ffxiv_module, "tcp.port", "FFXIV port range",
     "Range of ports to look for FFXIV traffic on.", &global_ffxiv_port_range, 55551
   );
 }
 
 // Setup ranged port handlers
-static void ffxiv_tcp_dissector_add(guint32 port) {
+static void ffxiv_tcp_dissector_add(guint32 port, gpointer any) {
   dissector_add_uint("tcp.port", port, ffxiv_handle);
 }
 
@@ -281,20 +282,9 @@ static void ffxiv_tcp_dissector_delete(guint32 port) {
 }
 
 // Register handlers
-void proto_reg_handoff_ffxiv(void) {
-  static range_t *ffxiv_port_range;
-  static gboolean initialised = FALSE;
-
-  if (!initialised) {
-    ffxiv_handle = register_dissector("ffxiv", dissect_ffxiv, proto_ffxiv);
-    initialised = TRUE;
-  } else {
-    range_foreach(ffxiv_port_range, ffxiv_tcp_dissector_delete);
-    g_free(ffxiv_port_range);
-  }
-
-  ffxiv_port_range = range_copy(global_ffxiv_port_range);
-  range_foreach(ffxiv_port_range, ffxiv_tcp_dissector_add);
-
+void proto_reg_handoff_ffxiv(void)
+{
+  ffxiv_handle = register_dissector("ffxiv", dissect_ffxiv, proto_ffxiv);
+  range_foreach(global_ffxiv_port_range, ffxiv_tcp_dissector_add, NULL);
   dissector_add_uint("ffxiv.frame.magic", FFXIV_MAGIC, ffxiv_handle);
 }
