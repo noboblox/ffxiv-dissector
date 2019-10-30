@@ -1,12 +1,15 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#define FRAME_HEADER_LEN 40
-#define BLOCK_HEADER_LEN 24
+const int FRAME_HEADER_LEN = 40;
 
-static dissector_handle_t ffxiv_handle;
-static gint ett_ffxiv = -1;
-
+const int FFXIV_MSG_HEADER_LEN = 20;
+const int FFXIV_MSG_HEADER_OFFSET_MSG_LEN = 0;
+const int FFXIV_MSG_HEADER_OFFSET_SEND_ID = 4;
+const int FFXIV_MSG_HEADER_OFFSET_RECEIVE_ID = 8;
+const int FFXIV_MSG_HEADER_OFFSET_UNKNOWN1 = 12;
+const int FFXIV_MSG_HEADER_OFFSET_UNKNOWN2 = 16;
+const int FFXIV_MSG_HEADER_OFFSET_OPCODE = 18;
 
 // FFXIV protocol generic types
 typedef struct {
@@ -21,38 +24,24 @@ typedef struct {
   uint8_t  mystery4[6];   // unknown [34:39]
 } frame_header_t;
 
-/*
-  So the block type could be uint16_t[14:15] in which case the mystery1 is
-  uint16_t[12:13] and the subsequent mystery data resumes
-  for some subset of uint128_t[16:31], ie:
-
-  typedef struct {
-    uint32_t  block_length;  // [0:3]
-    uint64_t  entity_id;     // [4:11]
-    uint16_t  mystery1;      // [12:13]
-    uint16_t  block_type;    // [14:15]
-    uint32_t  mystery2;      // [16:19]
-    uint32_t  mystery3;      // [20:23]
-    uint64_t  mystery4;      // [24:31]
-  } block_header_t;
-*/
-typedef struct {
-  uint32_t length;      // [0:3]
-  uint32_t send_id;     // [4:7]
-  uint32_t recv_id;     // [8:11]
-  uint32_t mystery1;    // [12:15]
-  uint32_t block_type;  // [16:19]
-  uint32_t mystery2;    // these could be smaller, no idea what's after header[20:]
-  uint64_t timestamp;   // [24:31]
-} block_header_t;
+typedef enum
+{
+    opcode_heartbeat = 0xe022
+} message_type;
 
 // Utility methods
 static guint32 get_frame_length(packet_info* pinfo, tvbuff_t *tvb, int offset, void* data);
 static guint32 get_message_length(packet_info* pinfo, tvbuff_t *tvb, int offset, void* data);
 static void build_frame_header(tvbuff_t *tvb, int offset, packet_info*, proto_tree *tree, frame_header_t *eh_ptr);
-static void build_message_header(tvbuff_t *tvb, int offset, packet_info*, proto_tree *tree, block_header_t *eh_ptr);
+static void decode_message_header(tvbuff_t *tvb, int offset, packet_info*, proto_tree *tree);
+
+// Message decoding
+static int decode_msg_data(tvbuff_t* msgbuf, proto_tree* tree, message_type type, guint data_length); //!< Decoder switch for all messages
+
+static int decode_msg_data_unknown(tvbuff_t* msgbuf, proto_tree* tree, guint data_length);            //!< Default decoder for all unknown message types
+static int decode_msg_data_heartbeat(tvbuff_t* msgbuf, proto_tree* tree, guint data_length);          //!< Opcode 0xe022
 
 // Dissection methods
 static int dissect_ffxiv(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data);
 static int dissect_frame(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data);
-static int dissect_message(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data);
+static int dissect_message(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree);

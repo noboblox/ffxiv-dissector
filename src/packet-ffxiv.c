@@ -14,6 +14,9 @@
 #define FFXIV_MAGIC 0x5252
 #define FFXIV_PORT_RANGE "54992-54994,55006-55007,55021-55040"
 
+static dissector_handle_t ffxiv_handle;
+static gint ett_ffxiv = -1;
+
 static const int ffxiv_header_length = 40;
 
 static int proto_ffxiv = -1; //!< Global id for this protocol. Set by wireshark on register.
@@ -37,6 +40,15 @@ static int hf_ffxiv_message_header_unknown2 = -1;
 static int hf_ffxiv_message_opcode = -1;
 static int hf_ffxiv_message_pdu_timestamp = -1;
 
+// Message data
+static int hf_ffxiv_generic_data = -1;
+
+static int hf_ffxiv_data_epoch_seconds = -1;
+
+static const value_string at_str_opcode_vals[] = {
+    { 0xe022,   "Heartbeat" },
+    { 0, NULL }
+};
 
 
 // Assemble generic headers
@@ -55,22 +67,40 @@ static void build_frame_header(tvbuff_t *tvb, int offset, packet_info *pinfo, pr
   proto_tree_add_item(tree, hf_ffxiv_frame_flag_compressed, tvb, 33, 1, ENC_LITTLE_ENDIAN);
 }
 
-static void build_message_header(tvbuff_t *tvb, int offset, packet_info *pinfo, proto_tree *tree, block_header_t *eh_ptr)
+static void decode_message_header(tvbuff_t *tvb, int offset, packet_info *pinfo, proto_tree *tree)
 {
-  eh_ptr->length = tvb_get_letohl(tvb, offset);
-  eh_ptr->send_id = tvb_get_letohl(tvb, offset + 4);
-  eh_ptr->recv_id = tvb_get_letohl(tvb, offset + 8);
-  eh_ptr->block_type = tvb_get_letohl(tvb, offset + 16);
-
-  proto_tree_add_item(tree, hf_ffxiv_message_pdu_length, tvb, 0, 4, ENC_LITTLE_ENDIAN);
-  proto_tree_add_item(tree, hf_ffxiv_message_pdu_send_id, tvb, 4, 4, ENC_LITTLE_ENDIAN);
-  proto_tree_add_item(tree, hf_ffxiv_message_pdu_recv_id, tvb, 8, 4, ENC_LITTLE_ENDIAN);
-  proto_tree_add_item(tree, hf_ffxiv_message_header_unknown1, tvb, 12, 4, ENC_LITTLE_ENDIAN);
-  proto_tree_add_item(tree, hf_ffxiv_message_header_unknown2, tvb, 16, 2, ENC_LITTLE_ENDIAN);
-  proto_tree_add_item(tree, hf_ffxiv_message_opcode, tvb, 18, 2, ENC_LITTLE_ENDIAN);
+  proto_tree_add_item(tree, hf_ffxiv_message_pdu_length, tvb, FFXIV_MSG_HEADER_OFFSET_MSG_LEN, 4, ENC_LITTLE_ENDIAN);
+  proto_tree_add_item(tree, hf_ffxiv_message_pdu_send_id, tvb, FFXIV_MSG_HEADER_OFFSET_SEND_ID, 4, ENC_LITTLE_ENDIAN);
+  proto_tree_add_item(tree, hf_ffxiv_message_pdu_recv_id, tvb, FFXIV_MSG_HEADER_OFFSET_RECEIVE_ID, 4, ENC_LITTLE_ENDIAN);
+  proto_tree_add_item(tree, hf_ffxiv_message_header_unknown1, tvb, FFXIV_MSG_HEADER_OFFSET_UNKNOWN1, 4, ENC_LITTLE_ENDIAN);
+  proto_tree_add_item(tree, hf_ffxiv_message_header_unknown2, tvb, FFXIV_MSG_HEADER_OFFSET_UNKNOWN2, 2, ENC_LITTLE_ENDIAN);
+  proto_tree_add_item(tree, hf_ffxiv_message_opcode, tvb, FFXIV_MSG_HEADER_OFFSET_OPCODE, 2, ENC_LITTLE_ENDIAN);
 
   // TODO
   //proto_tree_add_item(tree, hf_ffxiv_message_pdu_timestamp, tvb, 24, 8, ENC_LITTLE_ENDIAN); move to message data
+}
+
+static int decode_msg_data(tvbuff_t* msgbuf, proto_tree* tree, message_type type, guint data_length)
+{
+    switch (type)
+    {
+    case opcode_heartbeat:
+        return decode_msg_data_heartbeat(msgbuf, tree, data_length);
+    default:
+        return decode_msg_data_unknown(msgbuf, tree, data_length);
+    }
+}
+
+static int decode_msg_data_unknown(tvbuff_t* msgbuf, proto_tree* tree, guint data_length)
+{
+    proto_tree_add_item(tree, hf_ffxiv_generic_data, msgbuf, 0, data_length, ENC_STR_HEX);
+}
+
+static int decode_msg_data_heartbeat(tvbuff_t* msgbuf, proto_tree* tree, guint data_length)
+{
+    if (data_length != 4)
+        proto_report_dissector_bug("Unknown content. Size do not match. (%i != 4)", data_length);
+    proto_tree_add_item(tree, hf_ffxiv_data_epoch_seconds, msgbuf, 0, data_length, ENC_LITTLE_ENDIAN | ENC_TIME_SECS);
 }
 
 // Deal with multiple payloads in a single PDU
@@ -82,68 +112,50 @@ static guint32 get_message_length(packet_info *pinfo, tvbuff_t *tvb, int offset,
   return tvb_get_letohl(tvb, offset);
 }
 
-// Message header dissector
-static int dissect_message(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data) {
-  proto_tree      *message_tree = NULL;
-  proto_item      *ti = NULL;
-  block_header_t  header;
-  unsigned int             datalen;
-  int                      orig_offset;
-  int                      offset = 0;
-  unsigned int             reported_datalen;
-  unsigned int             reported_length;
-  tvbuff_t        *message_tvb;
+/**
+ * @brief Dissects a single message,
+ * The buffered bytes are checked against the reported message size from the protocol
+ * @return Number of bytes remaining in the buffer for further dissection
+ */
+static int dissect_message(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree)
+{
+  gint all_remaining_bytes = tvb_captured_length_remaining(tvb, 0);
 
-  // Verify we have a full message in the tvb
-  reported_length = tvb_reported_length_remaining(tvb, offset);
-  if (reported_length < BLOCK_HEADER_LEN) {
-    return -1;
+  if (all_remaining_bytes < 0)
+  {
+    proto_report_dissector_bug("Negative capture length detected (%i).", all_remaining_bytes);
   }
 
-  // Set packet protocol column, emty info
+  if (all_remaining_bytes < FFXIV_MSG_HEADER_LEN)
+    proto_report_dissector_bug("Message too short (%i < %i)", all_remaining_bytes, FFXIV_MSG_HEADER_LEN);
+
+  gint msg_len = tvb_get_letohl(tvb, FFXIV_MSG_HEADER_OFFSET_MSG_LEN);
+  gint data_len = msg_len - FFXIV_MSG_HEADER_LEN;
+ 
+  if (msg_len > all_remaining_bytes || data_len < 0 || msg_len < 0)
+  {
+    proto_report_dissector_bug("Message invalid (Captured: %i Bytes, Reported message length: %i Bytes, Minimum Message length: %i Bytes.)",
+                               all_remaining_bytes, msg_len, FFXIV_MSG_HEADER_LEN);
+  }
+
+  proto_item* item = proto_tree_add_item(tree, hf_ffxiv_message, tvb, 0, msg_len, ENC_NA);
+  proto_tree* msg_members = proto_item_add_subtree(item, ett_ffxiv);
+  decode_message_header(tvb, 0, pinfo, msg_members);
+
   col_set_str(pinfo->cinfo, COL_PROTOCOL, "FFXIV");
   col_clear(pinfo->cinfo, COL_INFO);
+  message_type opcode = (message_type) tvb_get_letohs(tvb, FFXIV_MSG_HEADER_OFFSET_OPCODE);
 
-  ti = proto_tree_add_item(tree, hf_ffxiv_message, tvb, offset, -1, ENC_NA);
-  message_tree = proto_item_add_subtree(ti, ett_ffxiv);
+  tvbuff_t* data_tvb = tvb_new_subset_length(tvb, FFXIV_MSG_HEADER_LEN, data_len);
+  decode_msg_data(data_tvb, msg_members, opcode, data_len);
+  add_new_data_source(pinfo, data_tvb, "Message Data");
 
-  orig_offset = offset;
-
-  build_message_header(tvb, orig_offset, pinfo, message_tree, &header);
-  if (reported_length < header.length) {
-    return -1;
-  }
-
-  offset += BLOCK_HEADER_LEN;
-
-  reported_datalen = tvb_reported_length_remaining(tvb, offset);
-  datalen          = tvb_captured_length_remaining(tvb, offset);
-
-  // TODO: fix this to deal with partial/malformed packets
-  if (datalen > header.length) {
-    // we probably have a partial block but eh
-    datalen = (int)header.length;
-  }
-
-  if (reported_datalen > header.length) {
-    // same
-    reported_datalen = (int)header.length;
-  }
-
-  /*
-    TODO: insert code for dealing with message types,
-    for now register it as generic data.
-  */
-
-  message_tvb = tvb_new_subset_length(tvb, 0, header.length);
-
-  add_new_data_source(pinfo, message_tvb, "Message Data");
-
-  return tvb_captured_length(message_tvb);
+  return (all_remaining_bytes - msg_len);
 }
 
 // Frame header dissector
-static int dissect_frame(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data) {
+static int dissect_frame(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
+{
   proto_tree          *frame_tree = NULL;
   proto_item          *ti = NULL;
   frame_header_t      header;
@@ -181,12 +193,11 @@ static int dissect_frame(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, vo
   offset = 0;
   do {
     remaining_messages_tvb = tvb_new_subset_remaining(remaining_messages_tvb, offset);
-    length = dissect_message(remaining_messages_tvb, pinfo, frame_tree, data);
+    length = dissect_message(remaining_messages_tvb, pinfo, frame_tree);
     offset = length;
-  } while (length >= BLOCK_HEADER_LEN);
+  } while (length >= FFXIV_MSG_HEADER_LEN);
 
-  // TODO: if remaining_messages_tvb has length > 0 here it's most likely corrupted or spread over multiple frames
-
+ 
   return tvb_captured_length(payload_tvb);
 }
 
@@ -240,12 +251,21 @@ void proto_register_ffxiv(void)
       {"Unknown value 2", "ffxiv.message.unknown2", FT_UINT16, BASE_HEX,
         NULL, 0x0, NULL, HFILL}},
       {&hf_ffxiv_message_opcode,
-       {"Message OpCode", "ffxiv.message.opcode", FT_UINT16, BASE_HEX, NULL, 0x0,
+       {"Message OpCode", "ffxiv.message.opcode", FT_UINT16, BASE_HEX, VALS(at_str_opcode_vals), 0x0,
         NULL, HFILL}},
       {&hf_ffxiv_message_pdu_timestamp,
        {"Message Timestamp", "ffxiv.message.timestamp", FT_ABSOLUTE_TIME,
         ABSOLUTE_TIME_LOCAL, NULL, 0x0, "The timestamp of the message event",
         HFILL}},
+
+       // Unknown default message
+      {&hf_ffxiv_generic_data,
+       {"Data", "ffxiv.message.data", FT_BYTES,
+        BASE_NONE, NULL, 0x0, "Raw message data",
+        HFILL}},
+      {&hf_ffxiv_data_epoch_seconds,
+       {"UTC Timestamp", "ffxiv.message.epoch", FT_ABSOLUTE_TIME, ABSOLUTE_TIME_UTC,
+        NULL, 0x0, NULL, HFILL}},
   };
 
   static gint *ett[] = {
