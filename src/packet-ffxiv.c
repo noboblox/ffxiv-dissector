@@ -30,6 +30,8 @@ static int hf_ffxiv_frame_pdu_length = -1;
 static int hf_ffxiv_frame_pdu_count = -1;
 static int hf_ffxiv_frame_flag_compressed = -1;
 
+ static int hf_ffxiv_compressed_data = -1;
+
 // FFXIV Message
 static int hf_ffxiv_message = -1;
 static int hf_ffxiv_message_pdu_length = -1;
@@ -52,22 +54,30 @@ static const value_string at_str_opcode_vals[] = {
 
 
 // Assemble generic headers
-static void build_frame_header(tvbuff_t *tvb, int offset, packet_info *pinfo, proto_tree *tree, frame_header_t *eh_ptr)
+static void build_frame_header(tvbuff_t* tvb, proto_tree* tree, frame_header_t* pdu_header)
 {
-  eh_ptr->magic = tvb_get_letohs(tvb, offset);
-  eh_ptr->timestamp = tvb_get_letoh64(tvb, offset + 16);
-  eh_ptr->length = tvb_get_letohl(tvb, offset + 24);
-  eh_ptr->blocks = tvb_get_letohs(tvb, offset + 30);
-  eh_ptr->compressed = tvb_get_guint8(tvb, 33);
+  pdu_header->rr_tag = tvb_get_letohs(tvb, FFXIV_PDU_HEADER_OFFSET_TAG);
+  proto_tree_add_item(tree, hf_ffxiv_frame_pdu_magic,       tvb, FFXIV_PDU_HEADER_OFFSET_TAG,      sizeof(pdu_header->rr_tag),      ENC_LITTLE_ENDIAN);
 
-  proto_tree_add_item(tree, hf_ffxiv_frame_pdu_magic,       tvb, 0,  4, ENC_LITTLE_ENDIAN);
-  proto_tree_add_item(tree, hf_ffxiv_frame_pdu_timestamp,   tvb, 16, 8, ENC_LITTLE_ENDIAN |ENC_TIME_MSECS);
-  proto_tree_add_item(tree, hf_ffxiv_frame_pdu_length,      tvb, 24, 4, ENC_LITTLE_ENDIAN);
-  proto_tree_add_item(tree, hf_ffxiv_frame_pdu_count,       tvb, 30, 2, ENC_LITTLE_ENDIAN);
-  proto_tree_add_item(tree, hf_ffxiv_frame_flag_compressed, tvb, 33, 1, ENC_LITTLE_ENDIAN);
+  pdu_header->utc_time_ms = tvb_get_letoh64(tvb, FFXIV_PDU_HEADER_OFFSET_UTC_MS);
+  proto_tree_add_item(tree, hf_ffxiv_frame_pdu_timestamp,   tvb, FFXIV_PDU_HEADER_OFFSET_UTC_MS,   sizeof(pdu_header->utc_time_ms), ENC_LITTLE_ENDIAN | ENC_TIME_MSECS);
+
+  pdu_header->length = tvb_get_letohl(tvb, FFXIV_PDU_HEADER_OFFSET_PDU_LEN);
+  proto_tree_add_item(tree, hf_ffxiv_frame_pdu_length,      tvb,  FFXIV_PDU_HEADER_OFFSET_PDU_LEN, sizeof(pdu_header->length),     ENC_LITTLE_ENDIAN);
+
+  pdu_header->msg_count = tvb_get_letohs(tvb, FFXIV_PDU_HEADER_OFFSET_NUM_MSG);
+  proto_tree_add_item(tree, hf_ffxiv_frame_pdu_count,       tvb, FFXIV_PDU_HEADER_OFFSET_NUM_MSG,  sizeof(pdu_header->msg_count),  ENC_LITTLE_ENDIAN);
+
+  pdu_header->encoding = tvb_get_guint8(tvb, FFXIV_PDU_HEADER_OFFSET_ENCODE);
+  proto_tree_add_item(tree, hf_ffxiv_frame_flag_compressed, tvb, FFXIV_PDU_HEADER_OFFSET_ENCODE,   sizeof(pdu_header->encoding), ENC_LITTLE_ENDIAN);
+
+  tvb_memcpy(tvb, pdu_header->magic1, FFXIV_PDU_HEADER_OFFSET_MAGIC1, sizeof(pdu_header->magic1));
+  pdu_header->magic2 = tvb_get_letohs(tvb, FFXIV_PDU_HEADER_OFFSET_MAGIC2);
+  pdu_header->magic3 = tvb_get_guint8(tvb, FFXIV_PDU_HEADER_OFFSET_MAGIC3);
+  tvb_memcpy(tvb, pdu_header->magic4, FFXIV_PDU_HEADER_OFFSET_MAGIC4, sizeof(pdu_header->magic4));
 }
 
-static void decode_message_header(tvbuff_t *tvb, int offset, packet_info *pinfo, proto_tree *tree)
+static void decode_message_header(tvbuff_t *tvb, proto_tree *tree)
 {
   proto_tree_add_item(tree, hf_ffxiv_message_pdu_length, tvb, FFXIV_MSG_HEADER_OFFSET_MSG_LEN, 4, ENC_LITTLE_ENDIAN);
   proto_tree_add_item(tree, hf_ffxiv_message_pdu_send_id, tvb, FFXIV_MSG_HEADER_OFFSET_SEND_ID, 4, ENC_LITTLE_ENDIAN);
@@ -80,23 +90,25 @@ static void decode_message_header(tvbuff_t *tvb, int offset, packet_info *pinfo,
   //proto_tree_add_item(tree, hf_ffxiv_message_pdu_timestamp, tvb, 24, 8, ENC_LITTLE_ENDIAN); move to message data
 }
 
-static int decode_msg_data(tvbuff_t* msgbuf, proto_tree* tree, message_type type, guint data_length)
+static void decode_msg_data(tvbuff_t* msgbuf, proto_tree* tree, message_type type, guint data_length)
 {
     switch (type)
     {
     case opcode_heartbeat:
-        return decode_msg_data_heartbeat(msgbuf, tree, data_length);
+        decode_msg_data_heartbeat(msgbuf, tree, data_length);
+        break;
     default:
-        return decode_msg_data_unknown(msgbuf, tree, data_length);
+        decode_msg_data_unknown(msgbuf, tree, data_length);
+        break;
     }
 }
 
-static int decode_msg_data_unknown(tvbuff_t* msgbuf, proto_tree* tree, guint data_length)
+static void decode_msg_data_unknown(tvbuff_t* msgbuf, proto_tree* tree, guint data_length)
 {
     proto_tree_add_item(tree, hf_ffxiv_generic_data, msgbuf, 0, data_length, ENC_STR_HEX);
 }
 
-static int decode_msg_data_heartbeat(tvbuff_t* msgbuf, proto_tree* tree, guint data_length)
+static void decode_msg_data_heartbeat(tvbuff_t* msgbuf, proto_tree* tree, guint data_length)
 {
     if (data_length != 4)
         proto_report_dissector_bug("Unknown content. Size do not match. (%i != 4)", data_length);
@@ -140,7 +152,7 @@ static int dissect_message(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree)
 
   proto_item* item = proto_tree_add_item(tree, hf_ffxiv_message, tvb, 0, msg_len, ENC_NA);
   proto_tree* msg_members = proto_item_add_subtree(item, ett_ffxiv);
-  decode_message_header(tvb, 0, pinfo, msg_members);
+  decode_message_header(tvb, msg_members);
 
   col_set_str(pinfo->cinfo, COL_PROTOCOL, "FFXIV");
   col_clear(pinfo->cinfo, COL_INFO);
@@ -150,54 +162,62 @@ static int dissect_message(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree)
   decode_msg_data(data_tvb, msg_members, opcode, data_len);
   add_new_data_source(pinfo, data_tvb, "Message Data");
 
-  return (all_remaining_bytes - msg_len);
+  return msg_len;
 }
 
 // Frame header dissector
 static int dissect_frame(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
 {
-  proto_tree          *frame_tree = NULL;
-  proto_item          *ti = NULL;
-  frame_header_t      header;
-  int                 offset = 0;
-  int                 length;
-  int                 reported_datalen;
-  tvbuff_t            *payload_tvb;
-  tvbuff_t            *remaining_messages_tvb;
-
-  // Verify we have a full frame header, if not we need reassembly
-  reported_datalen = tvb_reported_length_remaining(tvb, offset);
-  if (reported_datalen < FRAME_HEADER_LEN) {
-    return -1;
+  // Captured APDU
+  gint all_frame_bytes = tvb_captured_length_remaining(tvb, 0);
+  if (all_frame_bytes < FRAME_HEADER_LEN)
+  {
+      proto_report_dissector_bug("Invalid frame (Captured: %i Bytes, Expected header length of %i Bytes.)",
+                                 all_frame_bytes, FRAME_HEADER_LEN);
   }
-
   col_set_str(pinfo->cinfo, COL_PROTOCOL, "FFXIV");
   col_clear(pinfo->cinfo, COL_INFO);
 
-  ti         = proto_tree_add_item(tree, proto_ffxiv, tvb, 0, -1, ENC_NA);
-  frame_tree = proto_item_add_subtree(ti, ett_ffxiv);
+  proto_item* item = proto_tree_add_item(tree, proto_ffxiv, tvb, 0, -1, ENC_NA); // Frame tree (0 - end)
+  proto_tree* frame_tree = proto_item_add_subtree(item, ett_ffxiv);
 
-  build_frame_header(tvb, offset, pinfo, frame_tree, &header);
+  frame_header_t pdu_header = {0};
+  build_frame_header(tvb, frame_tree, &pdu_header);
+
+  if (pdu_header.length != all_frame_bytes)
+  {
+      proto_report_dissector_bug("Invalid APDU (Captured: %i Bytes, Reported %i Bytes.)",
+                                 all_frame_bytes, pdu_header.length);
+  }
+
+  gint payload_len = all_frame_bytes - FRAME_HEADER_LEN;
+  tvbuff_t* payload_tvb = tvb_new_subset_remaining(tvb, FRAME_HEADER_LEN);
 
   // Package is compressed
-  if (header.compressed & FFXIV_COMPRESSED_FLAG)
+  if (pdu_header.encoding & FFXIV_COMPRESSED_FLAG)
   {
-    payload_tvb = tvb_uncompress(tvb, FRAME_HEADER_LEN, tvb_reported_length_remaining(tvb, FRAME_HEADER_LEN));
-  }
-  else
-  {
-    payload_tvb = tvb_new_subset_remaining(tvb, FRAME_HEADER_LEN);
+    // Chain the uncompressed data to the original tvb.
+    proto_tree_add_item(tree, hf_ffxiv_compressed_data, payload_tvb, 0, payload_len, ENC_NA); // Frame tree (0 - end)
+    payload_tvb = tvb_child_uncompress(tvb, payload_tvb, 0, payload_len);
+
+    if (!payload_tvb)
+    {
+      proto_report_dissector_bug("Failed to uncompress frame data.");
+    }
   }
 
-  remaining_messages_tvb = payload_tvb;
-  offset = 0;
-  do {
-    remaining_messages_tvb = tvb_new_subset_remaining(remaining_messages_tvb, offset);
-    length = dissect_message(remaining_messages_tvb, pinfo, frame_tree);
-    offset = length;
-  } while (length >= FFXIV_MSG_HEADER_LEN);
+  gint processed = 0;
+  for (gint msg = 1; msg <= pdu_header.msg_count; ++msg)
+  {
+      payload_tvb = tvb_new_subset_remaining(payload_tvb, processed);
+      processed = dissect_message(payload_tvb, pinfo, frame_tree);
+  }
 
- 
+  if (processed != tvb_captured_length_remaining(payload_tvb, 0))
+  {
+      proto_report_dissector_bug("Invalid APDU (Processed on last message: %i Bytes. Captured length of last message: %i Bytes.)",
+                                 processed, tvb_captured_length_remaining(payload_tvb, 0));
+  }
   return tvb_captured_length(payload_tvb);
 }
 
@@ -235,6 +255,10 @@ void proto_register_ffxiv(void)
       {&hf_ffxiv_frame_flag_compressed,
        {"Frame Compression", "ffxiv.frame.compressed", FT_BOOLEAN, 8, NULL,
         FFXIV_COMPRESSED_FLAG, NULL, HFILL}},
+      {&hf_ffxiv_compressed_data,
+       {"Compressed data", "ffxiv.frame.compressed_data",FT_BYTES,
+        BASE_NONE, NULL, 0x0, "Data before decompression",
+        HFILL}},
       {&hf_ffxiv_message_pdu_length,
        {"Message Length", "ffxiv.message.length", FT_UINT32, BASE_DEC, NULL,
         0x0, NULL, HFILL}},
