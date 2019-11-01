@@ -28,9 +28,9 @@ static int hf_ffxiv_frame_pdu_magic = -1; //!< "RR" Tag 0x5252
 static int hf_ffxiv_frame_pdu_timestamp = -1; 
 static int hf_ffxiv_frame_pdu_length = -1;
 static int hf_ffxiv_frame_pdu_count = -1;
+static int hf_ffxiv_frame_magic3 = -1;
 static int hf_ffxiv_frame_flag_compressed = -1;
-
- static int hf_ffxiv_compressed_data = -1;
+static int hf_ffxiv_frame_magic4 = -1;
 
 // FFXIV Message
 static int hf_ffxiv_message = -1;
@@ -57,24 +57,27 @@ static const value_string at_str_opcode_vals[] = {
 static void build_frame_header(tvbuff_t* tvb, proto_tree* tree, frame_header_t* pdu_header)
 {
   pdu_header->rr_tag = tvb_get_letohs(tvb, FFXIV_PDU_HEADER_OFFSET_TAG);
-  proto_tree_add_item(tree, hf_ffxiv_frame_pdu_magic,       tvb, FFXIV_PDU_HEADER_OFFSET_TAG,      sizeof(pdu_header->rr_tag),      ENC_LITTLE_ENDIAN);
+  proto_tree_add_item(tree, hf_ffxiv_frame_pdu_magic, tvb, FFXIV_PDU_HEADER_OFFSET_TAG, sizeof(pdu_header->rr_tag), ENC_LITTLE_ENDIAN);
+
+  tvb_memcpy(tvb, pdu_header->magic1, FFXIV_PDU_HEADER_OFFSET_MAGIC1, sizeof(pdu_header->magic1)); // Not of interest. Part of the eye-catcher.
 
   pdu_header->utc_time_ms = tvb_get_letoh64(tvb, FFXIV_PDU_HEADER_OFFSET_UTC_MS);
-  proto_tree_add_item(tree, hf_ffxiv_frame_pdu_timestamp,   tvb, FFXIV_PDU_HEADER_OFFSET_UTC_MS,   sizeof(pdu_header->utc_time_ms), ENC_LITTLE_ENDIAN | ENC_TIME_MSECS);
+  proto_tree_add_item(tree, hf_ffxiv_frame_pdu_timestamp, tvb, FFXIV_PDU_HEADER_OFFSET_UTC_MS, sizeof(pdu_header->utc_time_ms), ENC_LITTLE_ENDIAN | ENC_TIME_MSECS);
 
-  pdu_header->length = tvb_get_letohl(tvb, FFXIV_PDU_HEADER_OFFSET_PDU_LEN);
-  proto_tree_add_item(tree, hf_ffxiv_frame_pdu_length,      tvb,  FFXIV_PDU_HEADER_OFFSET_PDU_LEN, sizeof(pdu_header->length),     ENC_LITTLE_ENDIAN);
+  pdu_header->length = tvb_get_letoh48(tvb, FFXIV_PDU_HEADER_OFFSET_PDU_LEN);
+  proto_tree_add_item(tree, hf_ffxiv_frame_pdu_length, tvb, FFXIV_PDU_HEADER_OFFSET_PDU_LEN, 6, ENC_LITTLE_ENDIAN);
 
   pdu_header->msg_count = tvb_get_letohs(tvb, FFXIV_PDU_HEADER_OFFSET_NUM_MSG);
-  proto_tree_add_item(tree, hf_ffxiv_frame_pdu_count,       tvb, FFXIV_PDU_HEADER_OFFSET_NUM_MSG,  sizeof(pdu_header->msg_count),  ENC_LITTLE_ENDIAN);
+  proto_tree_add_item(tree, hf_ffxiv_frame_pdu_count, tvb, FFXIV_PDU_HEADER_OFFSET_NUM_MSG, sizeof(pdu_header->msg_count), ENC_LITTLE_ENDIAN);
+
+  pdu_header->magic3 = tvb_get_guint8(tvb, FFXIV_PDU_HEADER_OFFSET_MAGIC3);
+  proto_tree_add_item(tree, hf_ffxiv_frame_magic3, tvb, FFXIV_PDU_HEADER_OFFSET_MAGIC3, sizeof(pdu_header->magic3), ENC_LITTLE_ENDIAN);
 
   pdu_header->encoding = tvb_get_guint8(tvb, FFXIV_PDU_HEADER_OFFSET_ENCODE);
-  proto_tree_add_item(tree, hf_ffxiv_frame_flag_compressed, tvb, FFXIV_PDU_HEADER_OFFSET_ENCODE,   sizeof(pdu_header->encoding), ENC_LITTLE_ENDIAN);
+  proto_tree_add_item(tree, hf_ffxiv_frame_flag_compressed, tvb, FFXIV_PDU_HEADER_OFFSET_ENCODE, sizeof(pdu_header->encoding), ENC_LITTLE_ENDIAN);
 
-  tvb_memcpy(tvb, pdu_header->magic1, FFXIV_PDU_HEADER_OFFSET_MAGIC1, sizeof(pdu_header->magic1));
-  pdu_header->magic2 = tvb_get_letohs(tvb, FFXIV_PDU_HEADER_OFFSET_MAGIC2);
-  pdu_header->magic3 = tvb_get_guint8(tvb, FFXIV_PDU_HEADER_OFFSET_MAGIC3);
   tvb_memcpy(tvb, pdu_header->magic4, FFXIV_PDU_HEADER_OFFSET_MAGIC4, sizeof(pdu_header->magic4));
+  proto_tree_add_item(tree, hf_ffxiv_frame_magic4, tvb, FFXIV_PDU_HEADER_OFFSET_MAGIC4, sizeof(pdu_header->magic4), ENC_LITTLE_ENDIAN);
 }
 
 static void decode_message_header(tvbuff_t *tvb, proto_tree *tree)
@@ -85,9 +88,6 @@ static void decode_message_header(tvbuff_t *tvb, proto_tree *tree)
   proto_tree_add_item(tree, hf_ffxiv_message_header_unknown1, tvb, FFXIV_MSG_HEADER_OFFSET_UNKNOWN1, 4, ENC_LITTLE_ENDIAN);
   proto_tree_add_item(tree, hf_ffxiv_message_header_unknown2, tvb, FFXIV_MSG_HEADER_OFFSET_UNKNOWN2, 2, ENC_LITTLE_ENDIAN);
   proto_tree_add_item(tree, hf_ffxiv_message_opcode, tvb, FFXIV_MSG_HEADER_OFFSET_OPCODE, 2, ENC_LITTLE_ENDIAN);
-
-  // TODO
-  //proto_tree_add_item(tree, hf_ffxiv_message_pdu_timestamp, tvb, 24, 8, ENC_LITTLE_ENDIAN); move to message data
 }
 
 static void decode_msg_data(tvbuff_t* msgbuf, proto_tree* tree, message_type type, guint data_length)
@@ -196,14 +196,13 @@ static int dissect_frame(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, vo
   // Package is compressed
   if (pdu_header.encoding & FFXIV_COMPRESSED_FLAG)
   {
-    // Chain the uncompressed data to the original tvb.
-    proto_tree_add_item(tree, hf_ffxiv_compressed_data, payload_tvb, 0, payload_len, ENC_NA); // Frame tree (0 - end)
     payload_tvb = tvb_child_uncompress(tvb, payload_tvb, 0, payload_len);
 
     if (!payload_tvb)
     {
       proto_report_dissector_bug("Failed to uncompress frame data.");
     }
+     add_new_data_source(pinfo, payload_tvb, "Decompressed Payload");
   }
 
   gint processed = 0;
@@ -237,45 +236,46 @@ void proto_register_ffxiv(void)
 {
   static hf_register_info hf[] = {
       {&hf_ffxiv_frame_pdu_magic,
-       {"RR Tag", "ffxiv.frame.magic", FT_UINT16, BASE_HEX, NULL, 0x0,
+       {"RR Tag", "ffxiv.frame.tag", FT_UINT16, BASE_HEX, NULL, 0x0,
         NULL, HFILL}},
-      {&hf_ffxiv_message,
-       {"FFXIV single message", "ffxiv.message", FT_NONE, BASE_NONE, NULL, 0x0,
-        NULL, HFILL}},
-      // Do something here to get timestamps rendered properly
       {&hf_ffxiv_frame_pdu_timestamp,
        {"Frame Timestamp", "ffxiv.frame.timestamp", FT_ABSOLUTE_TIME, ABSOLUTE_TIME_UTC, NULL,
         0x0, NULL, HFILL}},
       {&hf_ffxiv_frame_pdu_length,
-       {"Frame Length", "ffxiv.frame.length", FT_UINT32, BASE_DEC, NULL, 0x0,
+       {"Frame Length", "ffxiv.frame.length", FT_UINT48, BASE_DEC, NULL, 0x0,
         NULL, HFILL}},
       {&hf_ffxiv_frame_pdu_count,
-       {"Frame Count", "ffxiv.frame.count", FT_UINT16, BASE_DEC, NULL, 0x0,
+       {"Number of messages", "ffxiv.frame.count", FT_UINT16, BASE_DEC, NULL, 0x0,
         NULL, HFILL}},
+      {&hf_ffxiv_frame_magic3,
+       {"Unknown 2", "ffxiv.frame.unknown2", FT_UINT8, BASE_DEC, NULL,
+        0x0, NULL, HFILL}},
       {&hf_ffxiv_frame_flag_compressed,
-       {"Frame Compression", "ffxiv.frame.compressed", FT_BOOLEAN, 8, NULL,
+       {"Compression", "ffxiv.frame.compressed", FT_BOOLEAN, 8, NULL,
         FFXIV_COMPRESSED_FLAG, NULL, HFILL}},
-      {&hf_ffxiv_compressed_data,
-       {"Compressed data", "ffxiv.frame.compressed_data",FT_BYTES,
-        BASE_NONE, NULL, 0x0, "Data before decompression",
-        HFILL}},
+      {&hf_ffxiv_frame_magic4,
+       {"Unknown 3", "ffxiv.frame.unknown3", FT_UINT48, BASE_DEC, NULL,
+        0x0, NULL, HFILL}},
+      {&hf_ffxiv_message,
+       {"FFXIV single message", "ffxiv.message", FT_NONE, BASE_NONE, NULL, 0x0,
+        NULL, HFILL}},
       {&hf_ffxiv_message_pdu_length,
        {"Message Length", "ffxiv.message.length", FT_UINT32, BASE_DEC, NULL,
         0x0, NULL, HFILL}},
       {&hf_ffxiv_message_pdu_send_id,
-       {"Message Sender ID", "ffxiv.message.sender", FT_UINT32, BASE_DEC, NULL,
+       {"Sender ID", "ffxiv.message.sender", FT_UINT32, BASE_DEC, NULL,
         0x0, NULL, HFILL}},
       {&hf_ffxiv_message_pdu_recv_id,
-       {"Message Receiver ID", "ffxiv.message.receiver", FT_UINT32, BASE_DEC,
+       {"Receiver ID", "ffxiv.message.receiver", FT_UINT32, BASE_DEC,
         NULL, 0x0, NULL, HFILL}},
       {&hf_ffxiv_message_header_unknown1,
-      {"Unknown value 1", "ffxiv.message.unknown1", FT_UINT32, BASE_DEC,
+      {"Unknown 1", "ffxiv.message.unknown1", FT_UINT32, BASE_DEC,
         NULL, 0x0, NULL, HFILL}},
       {&hf_ffxiv_message_header_unknown2,
-      {"Unknown value 2", "ffxiv.message.unknown2", FT_UINT16, BASE_HEX,
+      {"Unknown 2", "ffxiv.message.unknown2", FT_UINT16, BASE_HEX,
         NULL, 0x0, NULL, HFILL}},
       {&hf_ffxiv_message_opcode,
-       {"Message OpCode", "ffxiv.message.opcode", FT_UINT16, BASE_HEX, VALS(at_str_opcode_vals), 0x0,
+       {"OpCode", "ffxiv.message.opcode", FT_UINT16, BASE_HEX, VALS(at_str_opcode_vals), 0x0,
         NULL, HFILL}},
       {&hf_ffxiv_message_pdu_timestamp,
        {"Message Timestamp", "ffxiv.message.timestamp", FT_ABSOLUTE_TIME,

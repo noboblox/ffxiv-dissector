@@ -5,7 +5,6 @@ const int FFXIV_PDU_HEADER_OFFSET_TAG     = 0;
 const int FFXIV_PDU_HEADER_OFFSET_MAGIC1  = 2;
 const int FFXIV_PDU_HEADER_OFFSET_UTC_MS  = 16;
 const int FFXIV_PDU_HEADER_OFFSET_PDU_LEN = 24;
-const int FFXIV_PDU_HEADER_OFFSET_MAGIC2  = 28;
 const int FFXIV_PDU_HEADER_OFFSET_NUM_MSG = 30;
 const int FFXIV_PDU_HEADER_OFFSET_MAGIC3  = 32;
 const int FFXIV_PDU_HEADER_OFFSET_ENCODE  = 33;
@@ -26,15 +25,14 @@ typedef struct
   uint16_t rr_tag;      // [0:1]
   uint16_t magic1[7];   // [2:15]
   uint64_t utc_time_ms; // [16:23]
-  uint32_t length;      // [24:27]
-  uint16_t magic2;      // [28:29]
+  uint64_t length;      // [24:29] 6 bytes inside PDU
   uint16_t msg_count;   // [30:31]
   uint8_t  magic3;      // [32]
   uint8_t  encoding;    // [33]
   uint16_t magic4[3];   // [34:39]
 } frame_header_t;
 
-const int FRAME_HEADER_LEN = sizeof(frame_header_t);
+const int FRAME_HEADER_LEN = 40;
 
 typedef enum
 {
