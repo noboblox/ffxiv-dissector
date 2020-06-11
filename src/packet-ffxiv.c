@@ -350,7 +350,7 @@ msg_add_type_to_packet_info(tvbuff_t *tvb, packet_info *pinfo)
 static void
 msg_dissect_any(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, guint msg_size)
 {
-  proto_item *heading = proto_tree_add_item(tree, hf_ffxiv_message, tvb, 0, msg_size - 1, ENC_NA);
+  proto_item *heading = proto_tree_add_item(tree, hf_ffxiv_message, tvb, 0, msg_size, ENC_NA);
   proto_tree *msg_tree = proto_item_add_subtree(heading, ett_ffxiv);
 
   /* TODO Opcode and "unknown2" seem to have different meaning for each message type. */
