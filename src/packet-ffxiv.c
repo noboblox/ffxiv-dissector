@@ -159,13 +159,13 @@ static void
 data_dissect_unknown(tvbuff_t *tvb_data, packet_info *pinfo, proto_tree *tree)
 {
   proto_tree_add_item(tree, hf_ffxiv_data_raw, tvb_data, 0, tvb_reported_length(tvb_data), ENC_STR_HEX);
-  col_add_str(pinfo->cinfo, COL_INFO, "Unknown; ");
+  col_append_str(pinfo->cinfo, COL_INFO, "Unknown; ");
 }
 
 static void
 data_dissect_gearset_change(tvbuff_t *tvb_data, packet_info *pinfo, proto_tree *tree)
 {
-  col_add_str(pinfo->cinfo, COL_INFO, "Change gearset; ");
+  col_append_str(pinfo->cinfo, COL_INFO, "Change gearset; ");
 
   guint offset = 0;
   data_dissect_timestamp(tvb_data, tree, &offset);
@@ -218,7 +218,7 @@ data_dissect_gearset_change(tvbuff_t *tvb_data, packet_info *pinfo, proto_tree *
 static void
 data_dissect_some_relative_time(tvbuff_t *tvb_data, packet_info *pinfo, proto_tree *tree)
 {
-  col_add_str(pinfo->cinfo, COL_INFO, "Relative time sync; ");
+  col_append_str(pinfo->cinfo, COL_INFO, "Relative time sync; ");
 
   guint offset = 0;
   data_dissect_timestamp(tvb_data, tree, &offset);
@@ -230,7 +230,7 @@ data_dissect_some_relative_time(tvbuff_t *tvb_data, packet_info *pinfo, proto_tr
 static void
 data_dissect_player_move(tvbuff_t *tvb_data, packet_info *pinfo, proto_tree *tree)
 {
-  col_add_str(pinfo->cinfo, COL_INFO, "Move request; ");
+  col_append_str(pinfo->cinfo, COL_INFO, "Move request; ");
 
   guint offset = 0;
   data_dissect_timestamp(tvb_data, tree, &offset);
@@ -331,19 +331,19 @@ msg_add_type_to_packet_info(tvbuff_t *tvb, packet_info *pinfo)
   switch (msg_type)
   {
   case FFXIV_MSG_CLIENT_STATUS:
-    col_set_str(pinfo->cinfo, COL_INFO, "CLIENT STATUS");
+    col_append_str(pinfo->cinfo, COL_INFO, "CLIENT STATUS");
     break;
 
   case FFXIV_MSG_SERVER_STATUS:
-    col_set_str(pinfo->cinfo, COL_INFO, "SERVER STATUS");
+    col_append_str(pinfo->cinfo, COL_INFO, "SERVER STATUS");
     break;
 
   case FFXIV_MSG_INGAME_DATA:
-    col_set_str(pinfo->cinfo, COL_INFO, "INGAME - ");
+    col_append_str(pinfo->cinfo, COL_INFO, "INGAME - ");
     break;
 
   default:
-    col_set_str(pinfo->cinfo, COL_INFO, "SERVICE UNKNOWN - ");
+    col_append_str(pinfo->cinfo, COL_INFO, "SERVICE UNKNOWN - ");
   }
 }
 
@@ -467,7 +467,9 @@ frame_dissect_payload(tvbuff_t *payload_tvb, packet_info *pinfo, proto_tree *tre
     const guint msg_size = msg_get_size(msg);
     next_msg_at += msg_size;
 
-    msg_add_type_to_packet_info(msg, pinfo);
+    if (i == 0)
+      msg_add_type_to_packet_info(msg, pinfo);
+
     msg_dissect_any(msg, pinfo, tree, msg_size);
   }
 }
