@@ -458,7 +458,7 @@ static int
 dissect_ffxiv(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *data)
 {
   tcp_dissect_pdus(tvb, pinfo, tree, TRUE, FRAME_HEADER_SIZE, frame_get_size, dissect_ffxiv_frame, data);
-  return 0;
+  return tvb_captured_length(tvb);
 }
 
 void
