@@ -423,16 +423,6 @@ frame_dissect_header(tvbuff_t *tvb, proto_tree *tree)
   proto_tree_add_item(tree, hf_ffxiv_frame_header_unknown_3, tvb, 34, 6, ENC_LITTLE_ENDIAN);
 }
 
-static void
-frame_setup_info(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree)
-{
-  col_set_str(pinfo->cinfo, COL_PROTOCOL, "FFXIV");
-  col_clear(pinfo->cinfo, COL_INFO);
-
-  proto_tree_add_item(tree, proto_ffxiv_id, tvb, 0, -1, ENC_NA);
-  tree = proto_item_add_subtree(tree, ett_ffxiv);
-}
-
 static guint8
 frame_is_compressed(tvbuff_t *tvb)
 {
@@ -483,8 +473,13 @@ dissect_ffxiv_frame(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *d
   if (tvb_captured_length(tvb) < FRAME_HEADER_SIZE)
     proto_report_dissector_bug("Frame too small: %u < %u", tvb_reported_length(tvb), FRAME_HEADER_SIZE);
 
-  frame_setup_info(tvb, pinfo, tree);
-  frame_dissect_header(tvb, tree);
+  proto_item *ffxiv_root = proto_tree_add_item(tree, proto_ffxiv_id, tvb, 0, -1, ENC_NA);
+  proto_tree *ffxiv_tree = proto_item_add_subtree(ffxiv_root, ett_ffxiv);
+
+  col_set_str(pinfo->cinfo, COL_PROTOCOL, "FFXIV");
+  col_clear(pinfo->cinfo, COL_INFO);
+
+  frame_dissect_header(tvb, ffxiv_tree);
 
   tvbuff_t* payload = tvb_new_subset_remaining(tvb, FRAME_HEADER_SIZE);
 
@@ -492,7 +487,7 @@ dissect_ffxiv_frame(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *d
     payload = frame_decompress_payload(payload, pinfo);
 
   const int messages = frame_get_msg_count(tvb);
-  frame_dissect_payload(payload, pinfo, tree, messages);
+  frame_dissect_payload(payload, pinfo, ffxiv_tree, messages);
 
   return tvb_captured_length(tvb);
 }
