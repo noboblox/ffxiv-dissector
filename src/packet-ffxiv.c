@@ -20,14 +20,16 @@ static int hf_ffxiv_frame_header_unknown_3      = -1;
 
 static int hf_ffxiv_message                     = -1;
 
-static int hf_ffxiv_data_msg_header_size        = -1;
-static int hf_ffxiv_data_msg_header_source      = -1;
-static int hf_ffxiv_data_msg_header_destination = -1;
-static int hf_ffxiv_data_msg_header_unknown_1   = -1;
+static int hf_ffxiv_msg_header_size             = -1;
+static int hf_ffxiv_msg_header_source           = -1;
+static int hf_ffxiv_msg_header_destination      = -1;
+static int hf_ffxiv_msg_header_type             = -1;
+
 static int hf_ffxiv_data_msg_header_unknown_2   = -1;
 static int hf_ffxiv_data_msg_header_opcode      = -1;
 
-static int hf_ffxiv_data_unknown                = -1;
+static int hf_ffxiv_data_raw                    = -1;
+static int hf_ffxiv_data_unknown_short          = -1;
 static int hf_ffxiv_data_epoch_seconds          = -1;
 static int hf_ffxiv_data_set_id                 = -1;
 static int hf_ffxiv_data_slot_action            = -1;
@@ -52,20 +54,33 @@ enum
 
 enum
 {
-  FFXIV_DATA_MSG_CHANGE_GEARSET = 0x018A,
-  FFXIV_DATA_MSG_MOVE_PLAYER    = 0x01EC,
-  FFXIV_DATA_MSG_TIME_RELATIVE  = 0x0346,
-  FFXIV_DATA_MSG_HEARTBEAT      = 0x1068,
-
-  FFXIV_DATA_MSG_UNKNOWN        = 0xFFFF
+  FFXIV_MSG_INGAME_DATA   = 3,
+  FFXIV_MSG_CLIENT_STATUS = 7,
+  FFXIV_MSG_SERVER_STATUS = 8
 };
 
 static const value_string msg_type_str[] =
 {
+  { FFXIV_MSG_INGAME_DATA,   "Ingame"},
+  { FFXIV_MSG_CLIENT_STATUS, "Client status"},
+  { FFXIV_MSG_SERVER_STATUS, "Server status"},
+  { 0, NULL }
+};
+
+enum
+{
+  FFXIV_DATA_MSG_CHANGE_GEARSET = 0x018A,
+  FFXIV_DATA_MSG_MOVE_PLAYER    = 0x01EC,
+  FFXIV_DATA_MSG_TIME_RELATIVE  = 0x0346,
+
+  FFXIV_DATA_MSG_UNKNOWN        = 0xFFFF
+};
+
+static const value_string data_msg_opcode_str[] =
+{
   { FFXIV_DATA_MSG_CHANGE_GEARSET, "Change Gearset"},
   { FFXIV_DATA_MSG_MOVE_PLAYER,    "Move player"},
   { FFXIV_DATA_MSG_TIME_RELATIVE,  "Relative time"},
-  { FFXIV_DATA_MSG_HEARTBEAT,      "Heartbeat"},
   { FFXIV_DATA_MSG_UNKNOWN,        "Unknown message"},
   { 0, NULL }
 };
@@ -97,12 +112,14 @@ data_register(int proto_id)
 {
   static hf_register_info field_ids[] =
   {
-    {&hf_ffxiv_data_unknown,        {"Unknown data",                 "ffxiv.message.data",
+    {&hf_ffxiv_data_raw,            {"Unknown data",                 "ffxiv.message.data",
         FT_BYTES,         BASE_NONE,         NULL,                      0x0, "Raw message data", HFILL}},
+    {&hf_ffxiv_data_unknown_short,  {"Unknown short",                "ffxiv.message.data.unknown1",
+        FT_UINT16,        BASE_DEC,          NULL,                      0x0, NULL,               HFILL}},
     {&hf_ffxiv_data_epoch_seconds,  {"UTC Timestamp",                "ffxiv.message.epoch",
-        FT_ABSOLUTE_TIME, ABSOLUTE_TIME_UTC, NULL,                      0x0, NULL, 				 HFILL}},
+        FT_ABSOLUTE_TIME, ABSOLUTE_TIME_UTC, NULL,                      0x0, NULL, 				       HFILL}},
     {&hf_ffxiv_data_set_id,         {"Gearset ID",                   "ffxiv.message.data.gearset.id",
-        FT_UINT32,        BASE_DEC,          NULL,                      0x0, NULL, 			     HFILL}},
+        FT_UINT32,        BASE_DEC,          NULL,                      0x0, NULL, 			         HFILL}},
     {&hf_ffxiv_data_set_ac_array,   {"Gearset actions",              "ffxiv.message.gearset.actions",
         FT_NONE,          BASE_NONE,         NULL,                      0x0, NULL,               HFILL}},
     {&hf_ffxiv_data_slot_action,    {"Gear slot action",             "ffxiv.message.data.gearset.actions.action",
@@ -133,23 +150,16 @@ static void
 data_dissect_timestamp(tvbuff_t *tvb, proto_tree *tree, guint* offset)
 {
   proto_tree_add_item(tree, hf_ffxiv_data_epoch_seconds, tvb, 4, 4, ENC_LITTLE_ENDIAN | ENC_TIME_SECS);
-  // TODO 4 bytes milliseconds
+  /* TODO 4 bytes milliseconds */
 
-  *offset += 12; // 8 bytes timestamp, 4 bytes padding
+  *offset += 12; /* 8 bytes timestamp, 4 bytes padding */
 }
 
 static void
 data_dissect_unknown(tvbuff_t *tvb_data, packet_info *pinfo, proto_tree *tree)
 {
-  proto_tree_add_item(tree, hf_ffxiv_data_unknown, tvb_data, 0, tvb_reported_length(tvb_data), ENC_STR_HEX);
+  proto_tree_add_item(tree, hf_ffxiv_data_raw, tvb_data, 0, tvb_reported_length(tvb_data), ENC_STR_HEX);
   col_add_str(pinfo->cinfo, COL_INFO, "Unknown; ");
-}
-
-static void
-data_dissect_heartbeat(tvbuff_t *tvb_data, packet_info *pinfo, proto_tree *tree)
-{
-  proto_tree_add_item(tree, hf_ffxiv_data_epoch_seconds, tvb_data, 0, 4, ENC_LITTLE_ENDIAN | ENC_TIME_SECS);
-  col_add_str(pinfo->cinfo, COL_INFO, "Heartbeat; ");
 }
 
 static void
@@ -163,7 +173,7 @@ data_dissect_gearset_change(tvbuff_t *tvb_data, packet_info *pinfo, proto_tree *
   proto_tree_add_item(tree, hf_ffxiv_data_set_id, tvb_data, offset, 4, ENC_LITTLE_ENDIAN);
   offset += 4;
 
-  // Gearset Action Array
+  /* Gearset Action Array */
   proto_item* action_array = proto_tree_add_item(tree, hf_ffxiv_data_set_ac_array, tvb_data, offset, 28, ENC_NA);
   proto_tree* action_entry = proto_item_add_subtree(action_array, ett_ffxiv);
 
@@ -182,7 +192,7 @@ data_dissect_gearset_change(tvbuff_t *tvb_data, packet_info *pinfo, proto_tree *
   proto_tree_add_item(action_entry, hf_ffxiv_data_slot_action, tvb_data, offset + 24, 2, ENC_LITTLE_ENDIAN);
   proto_tree_add_item(action_entry, hf_ffxiv_data_slot_action, tvb_data, offset + 26, 2, ENC_LITTLE_ENDIAN);
 
-  // Gearset Source Armory Slot Index
+  /* Gearset Source Armory Slot Index */
   proto_item* slot_array = proto_tree_add_item(tree, hf_ffxiv_data_set_slot_array, tvb_data, offset, 28, ENC_NA);
   proto_tree* slot_entry = proto_item_add_subtree(slot_array, ett_ffxiv);
 
@@ -201,7 +211,7 @@ data_dissect_gearset_change(tvbuff_t *tvb_data, packet_info *pinfo, proto_tree *
   proto_tree_add_item(slot_entry, hf_ffxiv_data_slot_id, tvb_data, offset + 52, 2, ENC_LITTLE_ENDIAN);
   proto_tree_add_item(slot_entry, hf_ffxiv_data_slot_id, tvb_data, offset + 54, 2, ENC_LITTLE_ENDIAN);
 
-  proto_tree_add_item(tree, hf_ffxiv_data_msg_header_unknown_1, tvb_data, offset + 56, 2, ENC_LITTLE_ENDIAN);
+  proto_tree_add_item(tree, hf_ffxiv_data_unknown_short, tvb_data, offset + 56, 2, ENC_LITTLE_ENDIAN);
   proto_tree_add_item(tree, hf_ffxiv_data_msg_header_unknown_2, tvb_data, offset + 58, 2, ENC_LITTLE_ENDIAN);
 }
 
@@ -214,7 +224,7 @@ data_dissect_some_relative_time(tvbuff_t *tvb_data, packet_info *pinfo, proto_tr
   data_dissect_timestamp(tvb_data, tree, &offset);
 
   proto_tree_add_item(tree, hf_ffxiv_data_rel_time,        tvb_data, offset + 0, 4, ENC_LITTLE_ENDIAN | ENC_TIME_MSECS);
-  proto_tree_add_item(tree, hf_ffxiv_data_msg_header_unknown_1, tvb_data, offset + 4, 2, ENC_LITTLE_ENDIAN);
+  proto_tree_add_item(tree, hf_ffxiv_data_unknown_short, tvb_data, offset + 4, 2, ENC_LITTLE_ENDIAN);
 }
 
 static void
@@ -247,9 +257,6 @@ data_msg_dissect_data(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, guint
   case FFXIV_DATA_MSG_TIME_RELATIVE:
     data_dissect_some_relative_time(tvb, pinfo, tree);
     break;
-  case FFXIV_DATA_MSG_HEARTBEAT:
-    data_dissect_heartbeat(tvb, pinfo, tree);
-    break;
 
   default:
     data_dissect_unknown(tvb, pinfo, tree);
@@ -258,9 +265,15 @@ data_msg_dissect_data(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, guint
 }
 
 static guint16
-data_msg_get_type(tvbuff_t *tvb)
+data_msg_get_opcode(tvbuff_t *tvb)
 {
   return tvb_get_letohs(tvb, 18);
+}
+
+static void
+status_message_dissect_data(tvbuff_t *tvb_msg, proto_tree *tree)
+{
+  proto_tree_add_item(tree, hf_ffxiv_data_epoch_seconds, tvb_msg, 0, 4, ENC_LITTLE_ENDIAN | ENC_TIME_SECS);
 }
 
 static void
@@ -268,20 +281,20 @@ msg_register_header(int proto_id)
 {
   static hf_register_info field_ids[] =
   {
-    {&hf_ffxiv_message,                {"FFXIV message",  "ffxiv.message",
-        FT_NONE,   BASE_NONE, NULL,                   0x0, "", HFILL}},
-    {&hf_ffxiv_data_msg_header_size,        {"Size",           "ffxiv.message.size",
-        FT_UINT32, BASE_DEC,  NULL,                   0x0, "", HFILL}},
-    {&hf_ffxiv_data_msg_header_source,      {"Source ID",      "ffxiv.message.source",
-        FT_UINT32, BASE_DEC,  NULL,                   0x0, "", HFILL}},
-    {&hf_ffxiv_data_msg_header_destination, {"Destination ID", "ffxiv.message.destination",
-        FT_UINT32, BASE_DEC,  NULL,                   0x0, "", HFILL}},
-    {&hf_ffxiv_data_msg_header_unknown_1,   {"Unknown 1",      "ffxiv.message.unknown1",
-        FT_UINT32, BASE_DEC,  NULL,                   0x0, "", HFILL}},
-    {&hf_ffxiv_data_msg_header_unknown_2,   {"Unknown 2",      "ffxiv.message.unknown2",
-        FT_UINT16, BASE_HEX,  NULL,                   0x0, "", HFILL}},
-    {&hf_ffxiv_data_msg_header_opcode,      {"Opcode",         "ffxiv.message.opcode",
-        FT_UINT16, BASE_HEX,  VALS(msg_type_str),     0x0, "", HFILL}}
+    {&hf_ffxiv_message,                     {"Message",        "ffxiv.message",
+        FT_NONE,   BASE_NONE, NULL,                          0x0, "", HFILL}},
+    {&hf_ffxiv_msg_header_size,             {"Size",           "ffxiv.message.size",
+        FT_UINT32, BASE_DEC,  NULL,                          0x0, "", HFILL}},
+    {&hf_ffxiv_msg_header_source,           {"Source ID",      "ffxiv.message.source",
+        FT_UINT32, BASE_DEC,  NULL,                          0x0, "", HFILL}},
+    {&hf_ffxiv_msg_header_destination,      {"Destination ID", "ffxiv.message.destination",
+        FT_UINT32, BASE_DEC,  NULL,                          0x0, "", HFILL}},
+    {&hf_ffxiv_msg_header_type,             {"Message type",   "ffxiv.message.type",
+        FT_UINT32, BASE_DEC,  VALS(msg_type_str),            0x0, "", HFILL}},
+    {&hf_ffxiv_data_msg_header_unknown_2,   {"Unknown 2",      "ffxiv.datamessage.unknown2",
+        FT_UINT16, BASE_HEX,  NULL,                          0x0, "", HFILL}},
+    {&hf_ffxiv_data_msg_header_opcode,      {"Opcode",         "ffxiv.datamessage.opcode",
+        FT_UINT16, BASE_HEX,  VALS(data_msg_opcode_str),     0x0, "", HFILL}}
   };
 
   proto_register_field_array(proto_id, field_ids, array_length(field_ids));
@@ -290,18 +303,72 @@ msg_register_header(int proto_id)
 static void
 msg_dissect_header(tvbuff_t *tvb, proto_tree *tree)
 {
-  proto_tree_add_item(tree, hf_ffxiv_data_msg_header_size,        tvb, 0,  4, ENC_LITTLE_ENDIAN);
-  proto_tree_add_item(tree, hf_ffxiv_data_msg_header_source,      tvb, 4,  4, ENC_LITTLE_ENDIAN);
-  proto_tree_add_item(tree, hf_ffxiv_data_msg_header_destination, tvb, 8,  4, ENC_LITTLE_ENDIAN);
-  proto_tree_add_item(tree, hf_ffxiv_data_msg_header_unknown_1,   tvb, 12, 4, ENC_LITTLE_ENDIAN);
+  proto_tree_add_item(tree, hf_ffxiv_msg_header_size,             tvb, 0,  4, ENC_LITTLE_ENDIAN);
+  proto_tree_add_item(tree, hf_ffxiv_msg_header_source,           tvb, 4,  4, ENC_LITTLE_ENDIAN);
+  proto_tree_add_item(tree, hf_ffxiv_msg_header_destination,      tvb, 8,  4, ENC_LITTLE_ENDIAN);
+  proto_tree_add_item(tree, hf_ffxiv_msg_header_type,             tvb, 12, 4, ENC_LITTLE_ENDIAN);
   proto_tree_add_item(tree, hf_ffxiv_data_msg_header_unknown_2,   tvb, 16, 2, ENC_LITTLE_ENDIAN);
   proto_tree_add_item(tree, hf_ffxiv_data_msg_header_opcode,      tvb, 18, 2, ENC_LITTLE_ENDIAN);
+}
+
+static guint
+msg_get_type(tvbuff_t *tvb)
+{
+  return tvb_get_letohl(tvb, 12);
 }
 
 static guint
 msg_get_size(tvbuff_t *tvb)
 {
   return tvb_get_letohl(tvb, 0);
+}
+
+static void
+msg_add_type_to_packet_info(tvbuff_t *tvb, packet_info *pinfo)
+{
+  const guint msg_type = msg_get_type(tvb);
+
+  switch (msg_type)
+  {
+  case FFXIV_MSG_CLIENT_STATUS:
+    col_set_str(pinfo->cinfo, COL_INFO, "CLIENT STATUS");
+    break;
+
+  case FFXIV_MSG_SERVER_STATUS:
+    col_set_str(pinfo->cinfo, COL_INFO, "SERVER STATUS");
+    break;
+
+  case FFXIV_MSG_INGAME_DATA:
+    col_set_str(pinfo->cinfo, COL_INFO, "INGAME - ");
+    break;
+
+  default:
+    col_set_str(pinfo->cinfo, COL_INFO, "SERVICE UNKNOWN - ");
+  }
+}
+
+static void
+msg_dissect_any(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, guint msg_size)
+{
+  proto_item *heading = proto_tree_add_item(tree, hf_ffxiv_message, tvb, 0, msg_size - 1, ENC_NA);
+  proto_tree *msg_tree = proto_item_add_subtree(heading, ett_ffxiv);
+
+  /* TODO Opcode and "unknown2" seem to have different meaning for each message type. */
+  msg_dissect_header(tvb, msg_tree);
+  const guint msg_type = msg_get_type(tvb);
+  tvbuff_t *msg_data = tvb_new_subset_length(tvb, MSG_HEADER_SIZE, msg_size - MSG_HEADER_SIZE);
+
+  switch (msg_type)
+  {
+    case FFXIV_MSG_CLIENT_STATUS:
+    case FFXIV_MSG_SERVER_STATUS:
+      status_message_dissect_data(msg_data, tree);
+      break;
+
+    case FFXIV_MSG_INGAME_DATA:
+    default:
+      data_msg_dissect_data(msg_data, pinfo, msg_tree, data_msg_get_opcode(tvb));
+  }
 }
 
 static void
@@ -346,7 +413,7 @@ static void
 frame_dissect_header(tvbuff_t *tvb, proto_tree *tree)
 {
   proto_tree_add_item(tree, hf_ffxiv_frame_header_sign,      tvb,  0, 2, ENC_LITTLE_ENDIAN);
-  // ... 14 bytes ignored ...
+  /* ... 14 bytes ignored ... */
   proto_tree_add_item(tree, hf_ffxiv_frame_header_timestamp, tvb, 16, 8, ENC_LITTLE_ENDIAN | ENC_TIME_MSECS);
   proto_tree_add_item(tree, hf_ffxiv_frame_header_size,      tvb, 24, 4, ENC_LITTLE_ENDIAN);
   proto_tree_add_item(tree, hf_ffxiv_frame_header_unknown_1, tvb, 28, 2, ENC_LITTLE_ENDIAN);
@@ -400,15 +467,8 @@ frame_dissect_payload(tvbuff_t *payload_tvb, packet_info *pinfo, proto_tree *tre
     const guint msg_size = msg_get_size(msg);
     next_msg_at += msg_size;
 
-    proto_item *heading = proto_tree_add_item(tree, hf_ffxiv_message, msg, 0, next_msg_at - 1, ENC_NA);
-    proto_tree *msg_tree = proto_item_add_subtree(heading, ett_ffxiv);
-
-    msg_dissect_header(msg, msg_tree);
-
-    const guint16 msg_type = data_msg_get_type(msg);
-    tvbuff_t *msg_data = tvb_new_subset_length(msg, MSG_HEADER_SIZE, msg_size - MSG_HEADER_SIZE);
-
-    data_msg_dissect_data(msg_data, pinfo, msg_tree, msg_type);
+    msg_add_type_to_packet_info(msg, pinfo);
+    msg_dissect_any(msg, pinfo, tree, msg_size);
   }
 }
 
