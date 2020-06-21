@@ -1,2 +1,5 @@
 os: windows
 language: c
+
+install: choco install -y winflexbison3 strawberryperl python3
+script: cmake .
