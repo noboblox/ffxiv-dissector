@@ -1,0 +1,4 @@
+[submodule "external/wireshark"]
+	path = external/wireshark
+	url = https://github.com/wireshark/wireshark.git
+	branch = master-3.2
