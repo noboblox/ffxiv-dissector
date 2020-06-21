@@ -1,8 +1,7 @@
 os: windows
 language: c
 env:
-- PLATFORM=win64
-- WIRESHARK_BASE_DIR="C:/Users/travis/build/noboblox/ffxiv-dissector/external/wireshark"
+- PLATFORM=win64 WIRESHARK_BASE_DIR="C:/Users/travis/build/noboblox/ffxiv-dissector/external/wireshark"
 
 before_install: choco install -y winflexbison3 strawberryperl python3
 script: cd external/wireshark && cmake -G "Visual Studio 15 2017" -A x64 -DBUILD_wireshark=OFF -DCMAKE_BUILD_TYPE=RelWithDebInfo .
