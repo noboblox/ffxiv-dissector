@@ -2,4 +2,4 @@ os: windows
 language: c
 
 before_install: choco install -y winflexbison3 strawberryperl python3
-script: cmake .
+script: cd external/wireshark && cmake -G "Visual Studio 16 2019" -A x64 -DBUILD_wireshark=OFF -DCMAKE_BUILD_TYPE=RelWithDebInfo .
