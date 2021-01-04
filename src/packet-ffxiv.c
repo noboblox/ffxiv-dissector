@@ -36,13 +36,16 @@ static int hf_ffxiv_data_slot_action            = -1;
 static int hf_ffxiv_data_slot_id                = -1;
 static int hf_ffxiv_data_set_ac_array           = -1;
 static int hf_ffxiv_data_set_slot_array         = -1;
-static int hf_ffxiv_data_rel_time               = -1;
+static int hf_ffxiv_data_server_clock           = -1;
 static int hf_ffxiv_data_los                    = -1;
 static int hf_ffxiv_data_move_flags             = -1;
 static int hf_ffxiv_data_pos_x                  = -1;
 static int hf_ffxiv_data_pos_z                  = -1;
 static int hf_ffxiv_data_pos_y                  = -1;
 static int hf_ffxiv_data_move_unknown           = -1;
+static int hf_ffxiv_data_unknown_int            = -1;
+static int hf_ffxiv_data_target_id              = -1;
+static int hf_ffxiv_data_target_flag_npc        = -1;
 
 enum { FRAME_HEADER_SIZE = 40 };
 enum { MSG_HEADER_SIZE   = 20 };
@@ -70,8 +73,9 @@ static const value_string msg_type_str[] =
 enum
 {
   FFXIV_DATA_MSG_CHANGE_GEARSET = 0x018A,
-  FFXIV_DATA_MSG_MOVE_PLAYER    = 0x01EC,
-  FFXIV_DATA_MSG_TIME_RELATIVE  = 0x0346,
+  FFXIV_DATA_MSG_TIME_SYNC      = 0x01B0,
+  FFXIV_DATA_MSG_MOVE_PLAYER    = 0x023C,
+  FFXIV_DATA_MSG_TARGET_SELECT  = 0x02C4,
 
   FFXIV_DATA_MSG_UNKNOWN        = 0xFFFF
 };
@@ -80,7 +84,8 @@ static const value_string data_msg_opcode_str[] =
 {
   { FFXIV_DATA_MSG_CHANGE_GEARSET, "Change Gearset"},
   { FFXIV_DATA_MSG_MOVE_PLAYER,    "Move player"},
-  { FFXIV_DATA_MSG_TIME_RELATIVE,  "Relative time"},
+  { FFXIV_DATA_MSG_TIME_SYNC,      "Time sync"},
+  { FFXIV_DATA_MSG_TARGET_SELECT,  "Select target"},
   { FFXIV_DATA_MSG_UNKNOWN,        "Unknown message"},
   { 0, NULL }
 };
@@ -112,36 +117,43 @@ data_register(int proto_id)
 {
   static hf_register_info field_ids[] =
   {
-    {&hf_ffxiv_data_raw,            {"Unknown data",                 "ffxiv.message.data",
+    {&hf_ffxiv_data_raw,             {"Unknown data",                 "ffxiv.message.data",
         FT_BYTES,         BASE_NONE,         NULL,                      0x0, "Raw message data", HFILL}},
-    {&hf_ffxiv_data_unknown_short,  {"Unknown short",                "ffxiv.message.data.unknown1",
+    {&hf_ffxiv_data_unknown_short,   {"Unknown short",                "ffxiv.message.data.unknown1",
         FT_UINT16,        BASE_DEC,          NULL,                      0x0, NULL,               HFILL}},
-    {&hf_ffxiv_data_epoch_seconds,  {"UTC Timestamp",                "ffxiv.message.epoch",
-        FT_ABSOLUTE_TIME, ABSOLUTE_TIME_UTC, NULL,                      0x0, NULL, 				       HFILL}},
-    {&hf_ffxiv_data_set_id,         {"Gearset ID",                   "ffxiv.message.data.gearset.id",
-        FT_UINT32,        BASE_DEC,          NULL,                      0x0, NULL, 			         HFILL}},
-    {&hf_ffxiv_data_set_ac_array,   {"Gearset actions",              "ffxiv.message.gearset.actions",
+    {&hf_ffxiv_data_epoch_seconds,   {"UTC Timestamp",                "ffxiv.message.epoch",
+        FT_ABSOLUTE_TIME, ABSOLUTE_TIME_UTC, NULL,                      0x0, NULL, 	         HFILL}},
+    {&hf_ffxiv_data_set_id,          {"Gearset ID",                   "ffxiv.message.data.gearset.id",
+        FT_UINT32,        BASE_DEC,          NULL,                      0x0, NULL, 	         HFILL}},
+    {&hf_ffxiv_data_set_ac_array,    {"Gearset actions",              "ffxiv.message.gearset.actions",
         FT_NONE,          BASE_NONE,         NULL,                      0x0, NULL,               HFILL}},
-    {&hf_ffxiv_data_slot_action,    {"Gear slot action",             "ffxiv.message.data.gearset.actions.action",
+    {&hf_ffxiv_data_slot_action,     {"Gear slot action",             "ffxiv.message.data.gearset.actions.action",
         FT_UINT16,        BASE_DEC,          VALS(gearset_chg_str),     0x0, NULL,               HFILL}},
-    {&hf_ffxiv_data_set_slot_array, {"Armory chest slots",           "ffxiv.message.gearset.slots",
+    {&hf_ffxiv_data_set_slot_array,  {"Armory chest slots",           "ffxiv.message.gearset.slots",
         FT_NONE,          BASE_NONE,         NULL,                      0x0, NULL,               HFILL}},
-    {&hf_ffxiv_data_slot_id,        {"Armoury chest source slot ID", "ffxiv.message.data.gearset.slots.source_id",
+    {&hf_ffxiv_data_slot_id,         {"Armoury chest source slot ID", "ffxiv.message.data.gearset.slots.source_id",
         FT_INT16,         BASE_DEC,          NULL,                      0x0, NULL,               HFILL}},
-    {&hf_ffxiv_data_rel_time,       {"Relative time",                "ffxiv.message.data.reltime.time",
+    {&hf_ffxiv_data_server_clock,    {"Server clock",                 "ffxiv.message.data.timesync.server",
         FT_RELATIVE_TIME, BASE_NONE,         NULL,                      0x0, NULL,               HFILL}},
-    {&hf_ffxiv_data_los,            {"Line of sight [rad]",          "ffxiv.message.data.line_of_sight",
+    {&hf_ffxiv_data_los,             {"Line of sight [rad]",          "ffxiv.message.data.line_of_sight",
         FT_FLOAT,         BASE_NONE,         NULL,                      0x0, NULL,               HFILL}},
-    {&hf_ffxiv_data_move_flags,     {"Move flags",                   "ffxiv.data.move.flags",
+    {&hf_ffxiv_data_move_flags,      {"Move flags",                   "ffxiv.data.move.flags",
         FT_BYTES,         BASE_NONE,         NULL,                      0x0, NULL,               HFILL}},
-    {&hf_ffxiv_data_pos_x,          {"X Position",                   "ffxiv.message.data.posX",
+    {&hf_ffxiv_data_pos_x,           {"X Position",                   "ffxiv.message.data.posX",
         FT_FLOAT,         BASE_NONE,         NULL,                      0x0, NULL,               HFILL}},
-    {&hf_ffxiv_data_pos_z,          {"Z Position",                   "ffxiv.message.data.posZ",
+    {&hf_ffxiv_data_pos_z,           {"Z Position",                   "ffxiv.message.data.posZ",
         FT_FLOAT,         BASE_NONE,         NULL,                      0x0, NULL,               HFILL}},
-    {&hf_ffxiv_data_pos_y,          {"Y Position",                   "ffxiv.message.data.posY",
+    {&hf_ffxiv_data_pos_y,           {"Y Position",                   "ffxiv.message.data.posY",
         FT_FLOAT,         BASE_NONE,         NULL,                      0x0, NULL,               HFILL}},
-    {&hf_ffxiv_data_move_unknown,   {"Unknown",                      "ffxiv.message.data.unknown",
-        FT_UINT16,        BASE_DEC_HEX,      NULL,                      0x0, NULL,               HFILL}}
+    {&hf_ffxiv_data_move_unknown,    {"Unknown",                      "ffxiv.message.data.unknown",
+        FT_UINT16,        BASE_DEC_HEX,      NULL,                      0x0, NULL,               HFILL}},
+    {&hf_ffxiv_data_unknown_int,     {"Unknown",                      "ffxiv.message.data.target.unknown1",
+        FT_UINT32,        BASE_DEC_HEX,     NULL,                       0x0,   NULL,             HFILL}},
+    {&hf_ffxiv_data_target_id,       {"Target ID",                    "ffxiv.message.data.target.id",
+        FT_UINT32,         BASE_DEC,         NULL,                      0x0,   NULL,             HFILL}},
+    {&hf_ffxiv_data_target_flag_npc, {"NPC",                          "ffxiv.message.data.target.flags.npc",
+        FT_BOOLEAN,       SEP_DOT,          NULL,                       0x01, NULL,             HFILL}}
+
   };
   proto_register_field_array(proto_id, field_ids, array_length(field_ids));
 }
@@ -216,15 +228,28 @@ data_dissect_gearset_change(tvbuff_t *tvb_data, packet_info *pinfo, proto_tree *
 }
 
 static void
-data_dissect_some_relative_time(tvbuff_t *tvb_data, packet_info *pinfo, proto_tree *tree)
+data_dissect_server_clock_sync(tvbuff_t *tvb_data, packet_info *pinfo, proto_tree *tree)
 {
-  col_append_str(pinfo->cinfo, COL_INFO, "Relative time sync; ");
+  col_append_str(pinfo->cinfo, COL_INFO, "Clock synchronization; ");
 
   guint offset = 0;
   data_dissect_timestamp(tvb_data, tree, &offset);
 
-  proto_tree_add_item(tree, hf_ffxiv_data_rel_time,        tvb_data, offset + 0, 4, ENC_LITTLE_ENDIAN | ENC_TIME_MSECS);
+  proto_tree_add_item(tree, hf_ffxiv_data_server_clock,  tvb_data, offset + 0, 4, ENC_LITTLE_ENDIAN | ENC_TIME_MSECS);
   proto_tree_add_item(tree, hf_ffxiv_data_unknown_short, tvb_data, offset + 4, 2, ENC_LITTLE_ENDIAN);
+}
+
+static void
+data_dissect_target_selection(tvbuff_t *tvb_data, packet_info *pinfo, proto_tree *tree)
+{
+    col_append_str(pinfo->cinfo, COL_INFO, "Target selection; ");
+
+    guint offset = 0;
+    data_dissect_timestamp(tvb_data, tree, &offset);
+
+    proto_tree_add_item(tree, hf_ffxiv_data_unknown_int,     tvb_data, offset + 0, 4, ENC_LITTLE_ENDIAN);
+    proto_tree_add_item(tree, hf_ffxiv_data_target_id,       tvb_data, offset + 4, 4, ENC_LITTLE_ENDIAN);
+    proto_tree_add_item(tree, hf_ffxiv_data_target_flag_npc, tvb_data, offset + 8, 2, ENC_LITTLE_ENDIAN);
 }
 
 static void
@@ -254,8 +279,12 @@ data_msg_dissect_data(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, guint
   case FFXIV_DATA_MSG_MOVE_PLAYER:
     data_dissect_player_move(tvb, pinfo, tree);
     break;
-  case FFXIV_DATA_MSG_TIME_RELATIVE:
-    data_dissect_some_relative_time(tvb, pinfo, tree);
+  case FFXIV_DATA_MSG_TIME_SYNC:
+    data_dissect_server_clock_sync(tvb, pinfo, tree);
+    break;
+
+  case FFXIV_DATA_MSG_TARGET_SELECT:
+    data_dissect_target_selection(tvb, pinfo, tree);
     break;
 
   default:
