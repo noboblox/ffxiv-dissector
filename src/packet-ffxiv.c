@@ -43,7 +43,8 @@ static int hf_ffxiv_data_pos_x                  = -1;
 static int hf_ffxiv_data_pos_z                  = -1;
 static int hf_ffxiv_data_pos_y                  = -1;
 static int hf_ffxiv_data_move_unknown           = -1;
-static int hf_ffxiv_data_unknown_int            = -1;
+static int hf_ffxiv_data_target_action          = -1;
+static int hf_ffxiv_data_emote_id               = -1;
 static int hf_ffxiv_data_target_id              = -1;
 static int hf_ffxiv_data_target_flag_npc        = -1;
 
@@ -64,30 +65,40 @@ enum
 
 static const value_string msg_type_str[] =
 {
-  { FFXIV_MSG_INGAME_DATA,   "Ingame"},
-  { FFXIV_MSG_CLIENT_STATUS, "Client status"},
-  { FFXIV_MSG_SERVER_STATUS, "Server status"},
+  { FFXIV_MSG_INGAME_DATA,   "Game data"},
+  { FFXIV_MSG_CLIENT_STATUS, "Client ping"},
+  { FFXIV_MSG_SERVER_STATUS, "Server ping"},
   { 0, NULL }
 };
 
 enum
 {
-  FFXIV_DATA_MSG_CHANGE_GEARSET = 0x018A,
-  FFXIV_DATA_MSG_TIME_SYNC      = 0x01B0,
-  FFXIV_DATA_MSG_MOVE_PLAYER    = 0x023C,
-  FFXIV_DATA_MSG_TARGET_SELECT  = 0x02C4,
-
-  FFXIV_DATA_MSG_UNKNOWN        = 0xFFFF
+  FFXIV_DATA_MSG_CHANGE_GEARSET  = 0x018A,
+  FFXIV_DATA_MSG_TIME_SYNC       = 0x01B0,
+  FFXIV_DATA_MSG_MOVE_PLAYER     = 0x023C,
+  FFXIV_DATA_MSG_TARGET_INTERACT = 0x02C4,
 };
 
 static const value_string data_msg_opcode_str[] =
 {
-  { FFXIV_DATA_MSG_CHANGE_GEARSET, "Change Gearset"},
-  { FFXIV_DATA_MSG_MOVE_PLAYER,    "Move player"},
-  { FFXIV_DATA_MSG_TIME_SYNC,      "Time sync"},
-  { FFXIV_DATA_MSG_TARGET_SELECT,  "Select target"},
-  { FFXIV_DATA_MSG_UNKNOWN,        "Unknown message"},
+  { FFXIV_DATA_MSG_CHANGE_GEARSET,   "Change Gearset"},
+  { FFXIV_DATA_MSG_MOVE_PLAYER,      "Move player"},
+  { FFXIV_DATA_MSG_TIME_SYNC,        "Time sync"},
+  { FFXIV_DATA_MSG_TARGET_INTERACT,  "Target interaction"},
   { 0, NULL }
+};
+
+enum
+{
+    FFXIV_TARGET_SELECTION = 3,
+    FFXIV_TARGET_EMOTE     = 500,
+};
+
+static const value_string target_interaction_str[] =
+{
+    {FFXIV_TARGET_SELECTION, "SELECT"},
+    {FFXIV_TARGET_EMOTE,     "EMOTE" },
+    {0, NULL}
 };
 
 static const value_string gearset_chg_str[] =
@@ -147,8 +158,10 @@ data_register(int proto_id)
         FT_FLOAT,         BASE_NONE,         NULL,                      0x0, NULL,               HFILL}},
     {&hf_ffxiv_data_move_unknown,    {"Unknown",                      "ffxiv.message.data.unknown",
         FT_UINT16,        BASE_DEC_HEX,      NULL,                      0x0, NULL,               HFILL}},
-    {&hf_ffxiv_data_unknown_int,     {"Unknown",                      "ffxiv.message.data.target.unknown1",
-        FT_UINT32,        BASE_DEC_HEX,     NULL,                       0x0,   NULL,             HFILL}},
+    {&hf_ffxiv_data_target_action,   {"Action",                       "ffxiv.message.data.target.action",
+        FT_UINT32,        BASE_DEC_HEX,      VALS(target_interaction_str),  0x0,   NULL,             HFILL}},
+    {&hf_ffxiv_data_emote_id,        {"Emote ID",                     "ffxiv.message.data.emote.id",
+        FT_UINT32,         BASE_DEC,         NULL,                      0x0,   NULL,             HFILL}},
     {&hf_ffxiv_data_target_id,       {"Target ID",                    "ffxiv.message.data.target.id",
         FT_UINT32,         BASE_DEC,         NULL,                      0x0,   NULL,             HFILL}},
     {&hf_ffxiv_data_target_flag_npc, {"NPC",                          "ffxiv.message.data.target.flags.npc",
@@ -168,17 +181,8 @@ data_dissect_timestamp(tvbuff_t *tvb, proto_tree *tree, guint* offset)
 }
 
 static void
-data_dissect_unknown(tvbuff_t *tvb_data, packet_info *pinfo, proto_tree *tree)
-{
-  proto_tree_add_item(tree, hf_ffxiv_data_raw, tvb_data, 0, tvb_reported_length(tvb_data), ENC_STR_HEX);
-  col_append_str(pinfo->cinfo, COL_INFO, "Unknown; ");
-}
-
-static void
 data_dissect_gearset_change(tvbuff_t *tvb_data, packet_info *pinfo, proto_tree *tree)
 {
-  col_append_str(pinfo->cinfo, COL_INFO, "Change gearset; ");
-
   guint offset = 0;
   data_dissect_timestamp(tvb_data, tree, &offset);
 
@@ -230,8 +234,6 @@ data_dissect_gearset_change(tvbuff_t *tvb_data, packet_info *pinfo, proto_tree *
 static void
 data_dissect_server_clock_sync(tvbuff_t *tvb_data, packet_info *pinfo, proto_tree *tree)
 {
-  col_append_str(pinfo->cinfo, COL_INFO, "Clock synchronization; ");
-
   guint offset = 0;
   data_dissect_timestamp(tvb_data, tree, &offset);
 
@@ -240,23 +242,60 @@ data_dissect_server_clock_sync(tvbuff_t *tvb_data, packet_info *pinfo, proto_tre
 }
 
 static void
-data_dissect_target_selection(tvbuff_t *tvb_data, packet_info *pinfo, proto_tree *tree)
+data_dissect_target_interact(tvbuff_t *tvb_data, packet_info *pinfo, proto_tree *tree)
 {
-    col_append_str(pinfo->cinfo, COL_INFO, "Target selection; ");
+    static const guint32 NO_TARGET = 0xE0000000;
 
     guint offset = 0;
     data_dissect_timestamp(tvb_data, tree, &offset);
 
-    proto_tree_add_item(tree, hf_ffxiv_data_unknown_int,     tvb_data, offset + 0, 4, ENC_LITTLE_ENDIAN);
-    proto_tree_add_item(tree, hf_ffxiv_data_target_id,       tvb_data, offset + 4, 4, ENC_LITTLE_ENDIAN);
-    proto_tree_add_item(tree, hf_ffxiv_data_target_flag_npc, tvb_data, offset + 8, 2, ENC_LITTLE_ENDIAN);
+    const guint32 action = tvb_get_guint32(tvb_data, offset + 0, ENC_LITTLE_ENDIAN);
+    proto_tree_add_item(tree, hf_ffxiv_data_target_action, tvb_data, offset + 0, 4, ENC_LITTLE_ENDIAN);
+
+    switch (action)
+    {
+        case FFXIV_TARGET_SELECTION:
+        {
+            proto_tree_add_item(tree, hf_ffxiv_data_target_id, tvb_data, offset + 4, 4, ENC_LITTLE_ENDIAN);
+            proto_tree_add_item(tree, hf_ffxiv_data_target_flag_npc, tvb_data, offset + 8, 2, ENC_LITTLE_ENDIAN);
+
+            const guint32 target = tvb_get_guint32(tvb_data, offset + 4, ENC_LITTLE_ENDIAN);
+
+            if (target == NO_TARGET)
+                col_append_str(pinfo->cinfo, COL_INFO, " [Unselect]");
+            else
+                col_append_fstr(pinfo->cinfo, COL_INFO, " [Select -> %u]", target);
+
+            break;
+        }
+
+        case FFXIV_TARGET_EMOTE:
+        {
+            proto_tree_add_item(tree, hf_ffxiv_data_emote_id, tvb_data,        offset + 4,  4, ENC_LITTLE_ENDIAN);
+            proto_tree_add_item(tree, hf_ffxiv_data_target_id, tvb_data,       offset + 24, 4, ENC_LITTLE_ENDIAN);
+            proto_tree_add_item(tree, hf_ffxiv_data_target_flag_npc, tvb_data, offset + 28, 2, ENC_LITTLE_ENDIAN);
+
+            const guint32 emote  = tvb_get_guint32(tvb_data, offset + 4, ENC_LITTLE_ENDIAN);
+            const guint32 target = tvb_get_guint32(tvb_data, offset + 24, ENC_LITTLE_ENDIAN);
+
+            if (target == NO_TARGET)
+                col_append_fstr(pinfo->cinfo, COL_INFO, " [Emote ID=%u]", emote);
+            else
+                col_append_fstr(pinfo->cinfo, COL_INFO, " [Emote ID=%u -> %u]", emote, target);
+
+            break;
+        }
+
+        default:
+             col_append_fstr(pinfo->cinfo, COL_INFO," [Unknown (%u)]", action);
+             proto_tree_add_item(tree, hf_ffxiv_data_raw, tvb_data, 0, tvb_reported_length(tvb_data), ENC_STR_HEX);
+    }
+
 }
 
 static void
 data_dissect_player_move(tvbuff_t *tvb_data, packet_info *pinfo, proto_tree *tree)
 {
-  col_append_str(pinfo->cinfo, COL_INFO, "Move request; ");
-
   guint offset = 0;
   data_dissect_timestamp(tvb_data, tree, &offset);
 
@@ -266,11 +305,20 @@ data_dissect_player_move(tvbuff_t *tvb_data, packet_info *pinfo, proto_tree *tre
   proto_tree_add_item(tree, hf_ffxiv_data_pos_z,        tvb_data, offset + 12, 4, ENC_LITTLE_ENDIAN);
   proto_tree_add_item(tree, hf_ffxiv_data_pos_y,        tvb_data, offset + 16, 4, ENC_LITTLE_ENDIAN);
   proto_tree_add_item(tree, hf_ffxiv_data_move_unknown, tvb_data, offset + 20, 2, ENC_LITTLE_ENDIAN);
+
+  const gfloat los = tvb_get_ieee_float(tvb_data, offset + 0, ENC_LITTLE_ENDIAN);
+  const gfloat x = tvb_get_ieee_float(tvb_data, offset   + 8, ENC_LITTLE_ENDIAN);
+  const gfloat z = tvb_get_ieee_float(tvb_data, offset   + 12, ENC_LITTLE_ENDIAN);
+  const gfloat y = tvb_get_ieee_float(tvb_data, offset   + 16, ENC_LITTLE_ENDIAN);
+
+  col_append_fstr(pinfo->cinfo, COL_INFO, " (X=%.2f, Y=%.2f, Z=%.2f, LoS=%.2f)", x, y, z, los);
 }
 
 static void
 data_msg_dissect_data(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, guint16 type)
 {
+  col_append_sep_str(pinfo->cinfo, COL_INFO, NULL, val_to_str(type, &data_msg_opcode_str, "Unknown data (0x%04x)"));
+
   switch (type)
   {
   case FFXIV_DATA_MSG_CHANGE_GEARSET:
@@ -283,12 +331,12 @@ data_msg_dissect_data(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, guint
     data_dissect_server_clock_sync(tvb, pinfo, tree);
     break;
 
-  case FFXIV_DATA_MSG_TARGET_SELECT:
-    data_dissect_target_selection(tvb, pinfo, tree);
+  case FFXIV_DATA_MSG_TARGET_INTERACT:
+    data_dissect_target_interact(tvb, pinfo, tree);
     break;
 
   default:
-    data_dissect_unknown(tvb, pinfo, tree);
+    proto_tree_add_item(tree, hf_ffxiv_data_raw, tvb, 0, tvb_reported_length(tvb), ENC_STR_HEX);
     break;
   }
 }
@@ -353,30 +401,6 @@ msg_get_size(tvbuff_t *tvb)
 }
 
 static void
-msg_add_type_to_packet_info(tvbuff_t *tvb, packet_info *pinfo)
-{
-  const guint msg_type = msg_get_type(tvb);
-
-  switch (msg_type)
-  {
-  case FFXIV_MSG_CLIENT_STATUS:
-    col_append_str(pinfo->cinfo, COL_INFO, "CLIENT STATUS");
-    break;
-
-  case FFXIV_MSG_SERVER_STATUS:
-    col_append_str(pinfo->cinfo, COL_INFO, "SERVER STATUS");
-    break;
-
-  case FFXIV_MSG_INGAME_DATA:
-    col_append_str(pinfo->cinfo, COL_INFO, "INGAME - ");
-    break;
-
-  default:
-    col_append_str(pinfo->cinfo, COL_INFO, "SERVICE UNKNOWN - ");
-  }
-}
-
-static void
 msg_dissect_any(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, guint msg_size)
 {
   proto_item *heading = proto_tree_add_item(tree, hf_ffxiv_message, tvb, 0, msg_size, ENC_NA);
@@ -391,12 +415,20 @@ msg_dissect_any(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, guint msg_s
   {
     case FFXIV_MSG_CLIENT_STATUS:
     case FFXIV_MSG_SERVER_STATUS:
+      // Special case: Display message type in COL_INFO
+      col_append_sep_str(pinfo->cinfo, COL_INFO, NULL, val_to_str(msg_type, &msg_type_str, "Unknown service (%u)"));
       status_message_dissect_data(msg_data, tree);
       break;
 
     case FFXIV_MSG_INGAME_DATA:
-    default:
+      // Common case: Message contains game data. Msg decides what to display inside COL_INFO
       data_msg_dissect_data(msg_data, pinfo, msg_tree, data_msg_get_opcode(tvb));
+      break;
+
+    default:
+      // Special case: Service is unknown. Append raw data and add COL_INFO
+      col_append_sep_str(pinfo->cinfo, COL_INFO, NULL, val_to_str(msg_type, &msg_type_str, "Unknown service (%u)"));
+      proto_tree_add_item(tree, hf_ffxiv_data_raw, tvb, 0, tvb_reported_length(tvb), ENC_STR_HEX);
   }
 }
 
@@ -486,9 +518,6 @@ frame_dissect_payload(tvbuff_t *payload_tvb, packet_info *pinfo, proto_tree *tre
     const guint msg_size = msg_get_size(msg);
     next_msg_at += msg_size;
 
-    if (i == 0)
-      msg_add_type_to_packet_info(msg, pinfo);
-
     msg_dissect_any(msg, pinfo, tree, msg_size);
   }
 }
@@ -516,6 +545,7 @@ dissect_ffxiv_frame(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, void *d
     payload = frame_decompress_payload(payload, pinfo);
 
   const int messages = frame_get_msg_count(tvb);
+
   frame_dissect_payload(payload, pinfo, ffxiv_tree, messages);
 
   return tvb_captured_length(tvb);
