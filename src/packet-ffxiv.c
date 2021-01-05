@@ -47,6 +47,9 @@ static int hf_ffxiv_data_target_action          = -1;
 static int hf_ffxiv_data_emote_id               = -1;
 static int hf_ffxiv_data_target_id              = -1;
 static int hf_ffxiv_data_target_flag_npc        = -1;
+static int hf_ffxiv_client_auth_unknown1        = -1;
+static int hf_ffxiv_client_auth_token           = -1;
+static int hf_ffxiv_client_auth_unknown2        = -1;
 
 enum { FRAME_HEADER_SIZE = 40 };
 enum { MSG_HEADER_SIZE   = 20 };
@@ -60,7 +63,8 @@ enum
 {
   FFXIV_MSG_INGAME_DATA   = 3,
   FFXIV_MSG_CLIENT_STATUS = 7,
-  FFXIV_MSG_SERVER_STATUS = 8
+  FFXIV_MSG_SERVER_STATUS = 8,
+  FFXIV_MSG_CLIENT_AUTH   = 9,
 };
 
 static const value_string msg_type_str[] =
@@ -68,20 +72,23 @@ static const value_string msg_type_str[] =
   { FFXIV_MSG_INGAME_DATA,   "Game data"},
   { FFXIV_MSG_CLIENT_STATUS, "Client ping"},
   { FFXIV_MSG_SERVER_STATUS, "Server ping"},
+  { FFXIV_MSG_CLIENT_AUTH,   "Client authentication"},
   { 0, NULL }
 };
 
 enum
 {
-  FFXIV_DATA_MSG_CHANGE_GEARSET  = 0x018A,
-  FFXIV_DATA_MSG_TIME_SYNC       = 0x01B0,
-  FFXIV_DATA_MSG_MOVE_PLAYER     = 0x023C,
-  FFXIV_DATA_MSG_TARGET_INTERACT = 0x02C4,
+  FFXIV_DATA_MSG_INVENTORY_ACTION = 0x0170,
+  FFXIV_DATA_MSG_CHANGE_GEARSET   = 0x018A,
+  FFXIV_DATA_MSG_TIME_SYNC        = 0x01B0,
+  FFXIV_DATA_MSG_MOVE_PLAYER      = 0x023C,
+  FFXIV_DATA_MSG_TARGET_INTERACT  = 0x02C4,
 };
 
 static const value_string data_msg_opcode_str[] =
 {
-  { FFXIV_DATA_MSG_CHANGE_GEARSET,   "Change Gearset"},
+  { FFXIV_DATA_MSG_INVENTORY_ACTION, "Inventory action [TODO]"},
+  { FFXIV_DATA_MSG_CHANGE_GEARSET,   "Change gearset"},
   { FFXIV_DATA_MSG_MOVE_PLAYER,      "Move player"},
   { FFXIV_DATA_MSG_TIME_SYNC,        "Time sync"},
   { FFXIV_DATA_MSG_TARGET_INTERACT,  "Target interaction"},
@@ -165,8 +172,13 @@ data_register(int proto_id)
     {&hf_ffxiv_data_target_id,       {"Target ID",                    "ffxiv.message.data.target.id",
         FT_UINT32,         BASE_DEC,         NULL,                      0x0,   NULL,             HFILL}},
     {&hf_ffxiv_data_target_flag_npc, {"NPC",                          "ffxiv.message.data.target.flags.npc",
-        FT_BOOLEAN,       SEP_DOT,          NULL,                       0x01, NULL,             HFILL}}
-
+        FT_BOOLEAN,       SEP_DOT,           NULL,                       0x01, NULL,             HFILL}},
+    {&hf_ffxiv_client_auth_unknown1,  {"Unknown 1",                   "ffxiv.message.data.auth.unknown1",
+        FT_UINT32,         BASE_DEC_HEX,     NULL,                      0x0,   NULL,             HFILL}},
+    {&hf_ffxiv_client_auth_token,     {"Auth-Token",                  "ffxiv.message.data.auth.token",
+        FT_STRINGZ,        STR_ASCII,       NULL,                      0x0,   NULL,             HFILL}},
+    {&hf_ffxiv_client_auth_unknown2, {"Unknown2",                     "ffxiv.message.data.target.auth.unknown2",
+        FT_UINT32,         BASE_DEC_HEX,           NULL,               0x00, NULL,             HFILL}}
   };
   proto_register_field_array(proto_id, field_ids, array_length(field_ids));
 }
@@ -178,6 +190,17 @@ data_dissect_timestamp(tvbuff_t *tvb, proto_tree *tree, guint* offset)
   /* TODO 4 bytes milliseconds */
 
   *offset += 12; /* 8 bytes timestamp, 4 bytes padding */
+}
+
+
+static void
+data_dissect_inventory_action(tvbuff_t *tvb_data, packet_info *pinfo, proto_tree *tree)
+{
+  guint offset = 0;
+  data_dissect_timestamp(tvb_data, tree, &offset);
+
+  proto_tree_add_item(tree, hf_ffxiv_data_raw, tvb_data, offset, -1, ENC_LITTLE_ENDIAN);
+  offset += 4;
 }
 
 static void
@@ -321,6 +344,9 @@ data_msg_dissect_data(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, guint
 
   switch (type)
   {
+  case FFXIV_DATA_MSG_INVENTORY_ACTION:
+    data_dissect_inventory_action(tvb, pinfo, tree);
+    break;
   case FFXIV_DATA_MSG_CHANGE_GEARSET:
     data_dissect_gearset_change(tvb, pinfo, tree);
     break;
@@ -330,7 +356,6 @@ data_msg_dissect_data(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, guint
   case FFXIV_DATA_MSG_TIME_SYNC:
     data_dissect_server_clock_sync(tvb, pinfo, tree);
     break;
-
   case FFXIV_DATA_MSG_TARGET_INTERACT:
     data_dissect_target_interact(tvb, pinfo, tree);
     break;
@@ -345,6 +370,14 @@ static guint16
 data_msg_get_opcode(tvbuff_t *tvb)
 {
   return tvb_get_letohs(tvb, 18);
+}
+
+static void
+client_auth_msg_dissect_data(tvbuff_t *tvb_msg, packet_info *pinfo, proto_tree *tree)
+{
+  proto_tree_add_item(tree, hf_ffxiv_client_auth_unknown1,  tvb_msg, 0,   4,  ENC_LITTLE_ENDIAN);
+  proto_tree_add_item(tree, hf_ffxiv_client_auth_token,     tvb_msg, 32,  64, ENC_ASCII);
+  proto_tree_add_item(tree, hf_ffxiv_client_auth_unknown2, tvb_msg, 96, 4,  ENC_LITTLE_ENDIAN);
 }
 
 static void
@@ -423,6 +456,11 @@ msg_dissect_any(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree, guint msg_s
     case FFXIV_MSG_INGAME_DATA:
       // Common case: Message contains game data. Msg decides what to display inside COL_INFO
       data_msg_dissect_data(msg_data, pinfo, msg_tree, data_msg_get_opcode(tvb));
+      break;
+
+    case FFXIV_MSG_CLIENT_AUTH:
+      col_append_sep_str(pinfo->cinfo, COL_INFO, NULL, val_to_str(msg_type, &msg_type_str, "Unknown service (%u)"));
+      client_auth_msg_dissect_data(msg_data, pinfo, msg_tree);
       break;
 
     default:
